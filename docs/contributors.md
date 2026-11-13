@@ -1,7 +1,6 @@
 # Contributors in the About window
 
-**About ▸ Contributors** credits everyone who contributed to DesignCraft, and **About ▸ Models** credits
-the AI models named in `Co-Authored-By` trailers.
+**About ▸ Contributors** credits everyone who contributed to DesignCraft.
 
 ## Decision
 

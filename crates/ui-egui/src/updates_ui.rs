@@ -1,4 +1,4 @@
-//! Software updates, background check at startup, and startup prompt modal.
+//! Software updates: the manual check from Help, its result dialogs and the install prompt.
 
 use serde_json::Value;
 
@@ -14,9 +14,6 @@ use craft_update::{CheckResultDialog, CheckResultResponse};
 pub(crate) struct Runtime {
     #[cfg(not(target_arch = "wasm32"))]
     updater: Updater,
-    /// The desktop app turns the check at start on; tests and the web build leave it off.
-    #[cfg(not(target_arch = "wasm32"))]
-    startup_check: bool,
     #[cfg(not(target_arch = "wasm32"))]
     check_requested: bool,
     /// The context of the last frame, to wake the UI when a check is queued from a menu callback.
@@ -33,22 +30,12 @@ impl Default for Runtime {
             #[cfg(not(target_arch = "wasm32"))]
             updater: Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")),
             #[cfg(not(target_arch = "wasm32"))]
-            startup_check: false,
-            #[cfg(not(target_arch = "wasm32"))]
             check_requested: false,
             #[cfg(not(target_arch = "wasm32"))]
             repaint: None,
             #[cfg(target_arch = "wasm32")]
             manual_window_open: false,
         }
-    }
-}
-
-impl DesignApp {
-    /// Whether the app asks for a newer release when it starts (off until the desktop app turns it on).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_startup_update_check(&mut self, on: bool) {
-        self.updates_rt.startup_check = on;
     }
 }
 
@@ -75,8 +62,6 @@ pub(crate) fn tick(app: &mut DesignApp, ctx: &egui::Context) {
         rt.repaint = Some(ctx.clone());
         if std::mem::take(&mut rt.check_requested) {
             rt.updater.check_now(ctx);
-        } else if rt.startup_check {
-            rt.updater.check_at_start(ctx);
         }
         rt.updater.tick(ctx);
     }
@@ -151,7 +136,6 @@ mod tests {
         assert!(!rt.manual_window_open);
         #[cfg(not(target_arch = "wasm32"))]
         {
-            assert!(!rt.startup_check);
             assert!(!rt.updater.prompt_open());
             assert_eq!(rt.updater.status(), &Status::Idle);
         }

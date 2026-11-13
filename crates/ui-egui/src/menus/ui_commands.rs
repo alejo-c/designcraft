@@ -402,7 +402,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "help.about",
         "About DesignCraft",
         None,
-        "{open?: true, tab?: \"about\"|\"contributors\"|\"models\"} — the About window: splash with community links, contributor and model credits (open: false closes it)",
+        "{open?: true, tab?: \"about\"|\"contributors\"} — the About window: splash with community links and contributor credits (open: false closes it)",
     ),
     ("help.checkForUpdates", "Check for Updates…", None, "{} — checks for newer releases and offers to update"),
     ("window.toolsDoubleColumn", "Tools: Double Column", None, "{on?: bool (default: toggle)} → whether the Tools panel has two columns"),

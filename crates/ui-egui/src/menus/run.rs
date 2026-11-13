@@ -1043,7 +1043,7 @@ fn run_ui_part5(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "help.about" => {
             if let Some(tab) = p.get("tab").and_then(Value::as_str) {
                 let Some(i) = crate::about::ABOUT_TABS.iter().position(|t| t.eq_ignore_ascii_case(tab)) else {
-                    return Some(Err(format!("help.about: unknown tab `{tab}` (about, contributors, models)")));
+                    return Some(Err(format!("help.about: unknown tab `{tab}` (about, contributors)")));
                 };
                 app.ui.about_tab = u8::try_from(i).unwrap_or(0);
             }

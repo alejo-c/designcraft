@@ -1,6 +1,6 @@
-//! Help › About DesignCraft: tabs About · Contributors · Models. About is the splash with the
+//! Help › About DesignCraft: tabs About · Contributors. About is the splash with the
 //! ArtCraft mark, version, and community links (Discord first and largest), plus the other ArtCraft
-//! apps; Contributors and Models are the compiled-in credits (`crate::credits`).
+//! apps; Contributors is the compiled-in credits (`crate::credits`).
 
 use designcraft_engine::links;
 use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
@@ -28,7 +28,7 @@ pub const SIBLINGS: &[(&str, &str, &str)] = &[
 ];
 
 /// The About window's tabs, in `UiState::about_tab` order (`help.about {tab}` names them in lowercase).
-pub const ABOUT_TABS: [&str; 3] = ["About", "Contributors", "Models"];
+pub const ABOUT_TABS: [&str; 2] = ["About", "Contributors"];
 
 /// Paint the ArtCraft mark into `rect` (square), rasterised once per size and cached.
 pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
@@ -139,11 +139,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             let h = 400.0_f32.min(ctx.content_rect().height() * 0.7).max(160.0);
             ui.allocate_ui_with_layout(vec2(ui.available_width(), h), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_min_height(h);
-                if app.ui.about_tab == 1 {
-                    crate::credits::contributors_ui(ui, &app.ui.language);
-                } else {
-                    crate::credits::models_ui(ui, &app.ui.language);
-                }
+                crate::credits::contributors_ui(ui, &app.ui.language);
             });
             ui.separator();
             ui.vertical_centered(|ui| {

@@ -428,7 +428,6 @@ fn main() -> std::process::ExitCode {
                 session.recovery_dir = profile::recovery_dir();
                 let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
                 let mut app = DesignApp::new(session, services());
-                app.set_startup_update_check(true);
                 if let Some(line) = restarted.or_else(|| created.status_line()) {
                     app.status(line);
                 }
