@@ -3439,6 +3439,49 @@ fn forwarded_keys_run_shortcuts() {
     assert!(app.session.active().unwrap().doc.item(designcraft_doc::ItemId(frame["id"].as_u64().unwrap())).is_none(), "Delete clears the selection");
 }
 
+/// Every export command sits in File › Export; Package and Print Booklet stay in File.
+#[test]
+fn file_export_submenu_holds_every_export_command() {
+    let file = menu_tree().into_iter().find(|(m, _)| *m == "File").map(|(_, e)| e).unwrap_or_default();
+    let export = file
+        .iter()
+        .find_map(|i| match i {
+            Item::Sub(name, children) if name == "Export" => Some(children),
+            _ => None,
+        })
+        .expect("File › Export");
+    let mut items = Vec::new();
+    walk(export, &mut items);
+    let ids: Vec<&str> = items.iter().map(|(_, id, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "app.exportPdf",
+            "app.exportBatch",
+            "app.exportPng",
+            "app.exportIdml",
+            "app.exportEpub",
+            "app.exportFixedEpub",
+            "app.exportInteractivePdf",
+            "app.exportHtml",
+            "app.exportPptx",
+            "app.exportXml",
+            "app.exportText",
+            "snippet.export",
+        ]
+    );
+    let top: Vec<&str> = file
+        .iter()
+        .filter_map(|i| match i {
+            Item::Cmd { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(!top.iter().any(|id| id.starts_with("app.export") || *id == "snippet.export"), "{top:?}");
+    assert!(top.contains(&"app.packageDialog"));
+    assert!(top.contains(&"app.printBooklet"));
+}
+
 #[test]
 fn file_menu_ends_with_quit_but_the_macos_menu_bar_leaves_it_to_the_app_menu() {
     let file = |tree: Vec<(&'static str, Vec<Item>)>| {
