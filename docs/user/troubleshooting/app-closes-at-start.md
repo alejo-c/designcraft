@@ -27,7 +27,7 @@ DesignCraft draws the canvas on the CPU and uses the graphics card only to show 
 
 ## Start the backend search over
 
-DesignCraft keeps its record of failed backends in a file called `gpu.json` in its settings folder, the one that holds `ui.json`, `prefs.json` and the `logs` folder (`%APPDATA%\DesignCraft\logs\` is the log folder on Windows). Delete the file to start the search again. The list also starts over after every backend has failed, and with a new DesignCraft version.
+DesignCraft keeps its record of failed backends in a file called `gpu.json` in its settings folder, beside `ui.json` and `prefs.json`. Delete the file to start the search again. The list also starts over after every backend has failed, and with a new DesignCraft version.
 
 ## Still stuck?
 

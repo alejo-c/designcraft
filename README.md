@@ -138,12 +138,13 @@ To drive a running app, send JSON lines to `127.0.0.1:7979`. The protocol is des
 
 ### Logs
 
-The desktop app writes its `log` records to standard error and to `logs/designcraft.log` in the
-settings directory, beside `ui.json` and `prefs.json` (Linux `~/.config/designcraft/logs/`, or
-`$XDG_CONFIG_HOME/designcraft/logs/`; macOS `~/Library/Application Support/DesignCraft/logs/`;
-Windows `%APPDATA%\DesignCraft\logs\`). A start launched from a desktop menu or the Dock has no
-terminal, so this file is what to attach to a bug report: the graphics adapters found and the
-one drawing, why the app stopped (also when its window never opened), the crash guard's panic
+The desktop app writes its `log` records to standard error and to `logs/designcraft.log` in its log
+folder (Linux `~/.local/state/designcraft/logs/`, or `$XDG_STATE_HOME/designcraft/logs/`; macOS
+`~/Library/Application Support/DesignCraft/logs/`; Windows `%APPDATA%\DesignCraft\logs\`). On macOS
+and Windows that is the settings directory, beside `ui.json` and `prefs.json`; an isolated profile
+and a portable install keep their logs in their own folder. A start launched from a desktop menu or
+the Dock has no terminal, so this file is what to attach to a bug report: the graphics adapters
+found and the one drawing, why the app stopped (also when its window never opened), the crash guard's panic
 report and a failed crash-recovery save land there. Each launch moves the previous log to `designcraft.1.log`
 (and that one to `designcraft.2.log`), so the log of a run that crashed survives the next start.
 The file stops growing at 16 MiB. `--version` writes no file.

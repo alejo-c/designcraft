@@ -16,13 +16,13 @@ Post in the [issue tracker](https://github.com/storytold/designcraft/issues) or 
 
 ## Where the log is
 
-DesignCraft writes `logs/designcraft.log` in its settings folder, beside `ui.json` and `prefs.json`.
+DesignCraft writes `designcraft.log` in its log folder. On macOS and Windows that folder is in the settings folder, beside `ui.json` and `prefs.json`. A portable install keeps it in its own `DesignCraftData` folder.
 
-| System  | Log folder                                                              |
-|---------|-------------------------------------------------------------------------|
-| Windows | `%APPDATA%\DesignCraft\logs\`                                           |
-| macOS   | `~/Library/Application Support/DesignCraft/logs/`                       |
-| Linux   | `~/.config/designcraft/logs/` (or `$XDG_CONFIG_HOME/designcraft/logs/`) |
+| System  | Log folder                                                                  |
+|---------|-----------------------------------------------------------------------------|
+| Windows | `%APPDATA%\DesignCraft\logs\`                                               |
+| macOS   | `~/Library/Application Support/DesignCraft/logs/`                           |
+| Linux   | `~/.local/state/designcraft/logs/` (or `$XDG_STATE_HOME/designcraft/logs/`) |
 
 Each start moves the previous log to `designcraft.1.log`, and that one to `designcraft.2.log`. The log from a run that crashed survives the next start, so attach `designcraft.1.log` if you have restarted since. The file stops growing at 16 MiB.
 
