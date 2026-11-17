@@ -12,6 +12,31 @@ pub fn config_dir() -> Option<PathBuf> {
     config_dir_with(std::env::consts::OS, |key| std::env::var_os(key), executable_dir().as_deref())
 }
 
+/// The folder that holds the log files: the XDG state folder on Linux
+/// (`$XDG_STATE_HOME/designcraft/logs`, or `$HOME/.local/state/designcraft/logs` when it is unset),
+/// so the settings folder stays free of logs. An isolated profile (`DESIGNCRAFT_CONFIG_DIR`) and a
+/// portable install keep their logs in `<root>/logs`; macOS and Windows keep them in the settings
+/// folder.
+pub fn log_dir() -> Option<PathBuf> {
+    log_dir_with(std::env::consts::OS, |key| std::env::var_os(key), executable_dir().as_deref())
+}
+
+fn log_dir_with(os: &str, env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(root) = root_with(&env, exe_dir) {
+        return (!root.is_empty()).then(|| PathBuf::from(root).join("logs"));
+    }
+    match os {
+        "macos" | "windows" => config_dir_with(os, &env, exe_dir).map(|dir| dir.join("logs")),
+        _ => state_home(&env).map(|dir| dir.join("designcraft").join("logs")),
+    }
+}
+
+/// `$XDG_STATE_HOME`, or `$HOME/.local/state` when it is unset. The XDG base directory
+/// specification ignores empty and relative values, so they fall back too.
+fn state_home(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    env("XDG_STATE_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).or_else(|| env("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+}
+
 fn config_dir_with(os: &str, env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -> Option<PathBuf> {
     if let Some(root) = root_with(&env, exe_dir) {
         // An explicitly empty override must not fall back to the user's profile.
@@ -112,11 +137,18 @@ fn recovery_dir_with(root: Option<OsString>, default: impl FnOnce() -> Option<Pa
 mod tests {
     use super::*;
 
+    /// A host-absolute path: `XDG_STATE_HOME` is ignored when relative, and `/xdg-state` is
+    /// relative on Windows.
+    fn state() -> PathBuf {
+        std::env::temp_dir().join("designcraft-test-xdg-state")
+    }
+
     fn environment(key: &str) -> Option<OsString> {
         match key {
             "HOME" => Some("/user".into()),
             "APPDATA" => Some("/roaming".into()),
             "XDG_CONFIG_HOME" => Some("/xdg-config".into()),
+            "XDG_STATE_HOME" => Some(state().into_os_string()),
             _ => None,
         }
     }
@@ -245,6 +277,35 @@ mod tests {
             Some("/user/.config/designcraft".into())
         );
         assert_eq!(recovery_dir_with(None, || Some("/existing/recovery".into())), Some("/existing/recovery".into()));
+    }
+
+    #[test]
+    fn logs_live_in_the_xdg_state_folder_on_linux_not_beside_the_settings() {
+        assert_eq!(log_dir_with("linux", environment, None), Some(state().join("designcraft/logs")));
+        // Unset, empty and relative XDG_STATE_HOME values fall back to ~/.local/state.
+        let home_only = |key: &str| if key == "HOME" { environment(key) } else { None };
+        for xdg in [None, Some(OsString::new()), Some("relative/state".into())] {
+            let env = |key: &str| if key == "XDG_STATE_HOME" { xdg.clone() } else { home_only(key) };
+            assert_eq!(log_dir_with("linux", env, None), Some("/user/.local/state/designcraft/logs".into()));
+        }
+        assert_eq!(log_dir_with("linux", |_| None, None), None);
+    }
+
+    #[test]
+    fn logs_stay_beside_isolated_and_portable_settings_and_on_macos_and_windows() {
+        let isolated = |key: &str| if key == "DESIGNCRAFT_CONFIG_DIR" { Some("/isolated".into()) } else { environment(key) };
+        assert_eq!(log_dir_with("linux", isolated, None), Some("/isolated/logs".into()));
+        let empty = |key: &str| if key == "DESIGNCRAFT_CONFIG_DIR" { Some(OsString::new()) } else { environment(key) };
+        assert_eq!(log_dir_with("linux", empty, None), None);
+
+        let exe = install("logs-portable", |marker| std::fs::write(marker, "").unwrap());
+        for os in ["macos", "windows", "linux"] {
+            assert_eq!(log_dir_with(os, environment, Some(&exe)), Some(exe.join("DesignCraftData/logs")));
+        }
+        let _ = std::fs::remove_dir_all(&exe);
+
+        assert_eq!(log_dir_with("macos", environment, None), Some("/user/Library/Application Support/DesignCraft/logs".into()));
+        assert_eq!(log_dir_with("windows", environment, None), Some("/roaming/DesignCraft/logs".into()));
     }
 
     #[test]

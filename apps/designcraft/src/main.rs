@@ -295,10 +295,11 @@ fn main() -> std::process::ExitCode {
         log::warn!("portable mode is off: {} cannot be written; settings and recovery use the usual folders", dir.display());
         format!("Portable mode is off: {} cannot be written, so settings are kept in the usual place.", dir.display())
     });
-    // The log file lives under the settings directory; opened after the arguments, so `--version`
-    // leaves no file behind. Records logged until now are written to it first.
-    if let (Some(logger), Some(dir)) = (logger, profile::config_dir()) {
-        match logger.attach_dir(&dir.join("logs")) {
+    // The log file lives in the XDG state folder on Linux and beside the settings elsewhere; opened
+    // after the arguments, so `--version` leaves no file behind. Records logged until now are
+    // written to it first.
+    if let (Some(logger), Some(dir)) = (logger, profile::log_dir()) {
+        match logger.attach_dir(&dir) {
             Ok(path) => log::info!("DesignCraft {}, log file {}", env!("CARGO_PKG_VERSION"), path.display()),
             // Standard error only by now (`attach_dir` gave up on the file); unlike `eprintln!`, never panics.
             Err(e) => log::warn!("no log file: {e}"),

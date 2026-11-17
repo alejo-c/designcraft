@@ -3,9 +3,11 @@
 //! Without a logger every `log::warn!`/`log::error!` in the workspace (the crash guard's panic
 //! report, a failed crash-recovery save, font folders that can't be read) vanished. A launch from
 //! a desktop menu has no terminal, so the file is what a bug report can attach:
-//! `<settings dir>/logs/designcraft.log` (the directory beside `ui.json` and `prefs.json`, see
-//! `config_dir` in `main.rs`). Each start moves the previous log to `designcraft.1.log` (and that
-//! one to `.2`), so the log of a run that crashed survives the next launch.
+//! `<log dir>/designcraft.log`, the XDG state folder on Linux (`$XDG_STATE_HOME/designcraft/logs`,
+//! `~/.local/state/designcraft/logs` when it is unset) and the settings folder beside `ui.json` and
+//! `prefs.json` on macOS and Windows (see `log_dir` in `profile.rs`). Each start moves the previous
+//! log to `designcraft.1.log` (and that one to `.2`), so the log of a run that crashed survives
+//! the next launch.
 //!
 //! Levels: `info` for DesignCraft's own crates, `warn` for everything else (wgpu and naga are
 //! chatty). `RUST_LOG` replaces that with env_logger-style directives: `debug`,
