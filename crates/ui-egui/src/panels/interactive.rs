@@ -6,40 +6,85 @@ use crate::DesignApp;
 use crate::app::file_dialogs::Bound;
 use crate::theme::Tokens;
 
-fn dest_text(lang: &str, d: &Value) -> String {
-    if let Some(u) = d.get("url").and_then(Value::as_str) {
-        return u.to_string();
+fn dest_text(lang: &str, d: &Value, anchors: &[Value]) -> String {
+    match d["kind"].as_str() {
+        Some("url") => d["value"].as_str().unwrap_or("").to_string(),
+        Some("email") => format!("mailto:{}", d["value"].as_str().unwrap_or("")),
+        Some("page") => format!("{} {}", crate::i18n::tr(lang, "Page"), d["value"].as_u64().unwrap_or(0).saturating_add(1)),
+        Some("anchor") => {
+            anchors.iter().find(|a| a["id"] == d["value"]).and_then(|a| a["name"].as_str()).unwrap_or("Missing text anchor").to_string()
+        }
+        _ => d.to_string(),
     }
-    if let Some(e) = d.get("email").and_then(Value::as_str) {
-        return format!("mailto:{e}");
-    }
-    if let Some(p) = d.get("page").and_then(Value::as_u64) {
-        return format!("{} {}", crate::i18n::tr(lang, "Page"), p + 1);
-    }
-    d.to_string()
 }
 
 pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let id = egui::Id::unique("new_hyperlink_url");
     let mut url: String = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| "https://".into());
+    let anchors = app.session.execute("anchor.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let key = egui::Id::unique(("hyperlink_destination", app.session.active().map(|d| d.uid)));
+    let (mut anchor_mode, mut anchor): (bool, Option<u64>) = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    if !anchors.iter().any(|a| a["id"].as_u64() == anchor) {
+        anchor = None;
+    }
+    let kind_label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Link to:"));
+    craft_ui::ComboBox::from_id_salt(key.with("kind"))
+        .selected_text(crate::i18n::tr(&app.ui.language, if anchor_mode { "Text Anchor" } else { "URL" }))
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(!anchor_mode, crate::i18n::tr(&app.ui.language, "URL")).clicked() {
+                anchor_mode = false;
+            }
+            if ui.selectable_label(anchor_mode, crate::i18n::tr(&app.ui.language, "Text Anchor")).clicked() {
+                anchor_mode = true;
+            }
+        })
+        .response
+        .labelled_by(kind_label.id);
     let has_target = app.session.active().is_some_and(|d| d.selection.text.is_some_and(|t| !t.is_caret()) || !d.selection.items.is_empty());
+    let destination_label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Destination:"));
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut url).desired_width(170.0));
+        if anchor_mode {
+            let name = anchors.iter().find(|a| a["id"].as_u64() == anchor).and_then(|a| a["name"].as_str()).unwrap_or("Select text anchor");
+            craft_ui::ComboBox::from_id_salt(key.with("anchor"))
+                .selected_text(name)
+                .width(170.0)
+                .show_ui(ui, |ui| {
+                    for a in &anchors {
+                        if ui.selectable_label(a["id"].as_u64() == anchor, a["name"].as_str().unwrap_or("")).clicked() {
+                            anchor = a["id"].as_u64();
+                        }
+                    }
+                })
+                .response
+                .labelled_by(destination_label.id);
+        } else {
+            ui.add(egui::TextEdit::singleline(&mut url).desired_width(170.0)).labelled_by(destination_label.id);
+        }
         if ui
-            .add_enabled(has_target, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New"))))
+            .add_enabled(
+                has_target && (!anchor_mode || anchor.is_some()),
+                egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New"))),
+            )
             .on_hover_ui(|ui| {
                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Hyperlink from the selected text or frames"));
             })
             .clicked()
         {
-            let p = if let Some(m) = url.strip_prefix("mailto:") { json!({"email": m}) } else { json!({"url": url}) };
+            let p = if anchor_mode {
+                json!({"anchor": anchor})
+            } else if let Some(m) = url.strip_prefix("mailto:") {
+                json!({"email": m})
+            } else {
+                json!({"url": url})
+            };
             if let Err(e) = app.run("hyperlink.create", p) {
                 app.status_error("Hyperlinks", e);
             }
         }
     });
     ui.data_mut(|d| d.insert_temp(id, url));
+    ui.data_mut(|d| d.insert_temp(key, (anchor_mode, anchor)));
     ui.separator();
     let list = app.session.execute("hyperlink.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     if list.is_empty() {
@@ -47,7 +92,7 @@ pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui,
             crate::rtl::widget(
                 ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "No hyperlinks. Select text or a frame, type a URL and click New."))
+                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select text or a frame, choose a destination and click New."))
                     .size(11.0)
                     .color(t.text_dim),
             ),
@@ -56,7 +101,7 @@ pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
     for h in list {
         let hid = h["id"].clone();
         ui.horizontal(|ui| {
-            let r = ui.selectable_label(false, h["name"].as_str().unwrap_or("")).on_hover_text(dest_text(&app.ui.language, &h["dest"]));
+            let r = ui.selectable_label(false, h["name"].as_str().unwrap_or("")).on_hover_text(dest_text(&app.ui.language, &h["dest"], &anchors));
             if r.clicked() {
                 let _ = app.run("hyperlink.goToSource", json!({"id": hid}));
             }
@@ -66,6 +111,40 @@ pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod anchor_link_tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    #[test]
+    fn panel_creates_a_link_to_the_selected_text_anchor() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [36,36,300,200], "content": "text", "text": "Destination source"})).unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 0})).unwrap();
+        let a = app.run("anchor.create", json!({"name": "Introduction"})).unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 15, "focus": 21})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(500.0, 500.0)).build_ui_state(|ui, app| hyperlinks(app, ui), app);
+        h.run_steps(3);
+        h.get_by_value("URL").click();
+        h.run_steps(3);
+        h.get_by_label("Text Anchor").click();
+        h.run_steps(3);
+        assert!(h.state().session.doc().unwrap().doc.hyperlinks.is_empty());
+        h.get_by_value("Select text anchor").click();
+        h.run_steps(3);
+        h.get_by_label("Introduction").click();
+        h.run_steps(3);
+        h.get_by_label("New").click();
+        h.run_steps(3);
+        let link = &h.state().session.doc().unwrap().doc.hyperlinks[0];
+        assert_eq!(link.dest, designcraft_doc::HyperlinkDest::Anchor(a["id"].as_u64().unwrap()));
+        assert_eq!(dest_text("en", &serde_json::to_value(&link.dest).unwrap(), &[json!({"id": a["id"], "name": "Introduction"})]), "Introduction");
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert!(h.state().session.doc().unwrap().doc.hyperlinks.is_empty());
     }
 }
 
