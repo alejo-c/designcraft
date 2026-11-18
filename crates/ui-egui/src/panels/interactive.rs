@@ -88,6 +88,8 @@ pub fn bookmarks(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     for (i, b) in list.iter().enumerate() {
         let page = b["page"].as_u64().unwrap_or(0) as usize;
+        let key = egui::Id::unique(("bookmark_name", app.session.active().map(|d| d.uid), i));
+        let mut draft: Option<String> = ui.data(|d| d.get_temp(key));
         ui.horizontal(|ui| {
             if ui
                 .selectable_label(false, b["name"].as_str().unwrap_or(""))
@@ -99,9 +101,70 @@ pub fn bookmarks(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete"))).clicked() {
                     let _ = app.run("bookmark.delete", json!({"index": i}));
+                    for index in 0..list.len() {
+                        let old = egui::Id::unique(("bookmark_name", app.session.active().map(|d| d.uid), index));
+                        ui.data_mut(|d| d.remove::<String>(old));
+                    }
+                    draft = None;
+                }
+                if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Rename"))).clicked() {
+                    draft = Some(b["name"].as_str().unwrap_or("").to_string());
                 }
             });
         });
+        if let Some(mut name) = draft.take() {
+            let mut close = false;
+            ui.push_id(key, |ui| {
+                let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
+                ui.add(egui::TextEdit::singleline(&mut name).desired_width(170.0)).labelled_by(label.id);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!name.trim().is_empty(), egui::Button::new(crate::i18n::tr(&app.ui.language, "Save"))).clicked() {
+                        match app.run("bookmark.rename", json!({"index": i, "name": name})) {
+                            Ok(_) => close = true,
+                            Err(e) => app.status_error("Bookmarks", e),
+                        }
+                    }
+                    close |= ui.button(crate::i18n::tr(&app.ui.language, "Cancel")).clicked();
+                });
+            });
+            if !close {
+                draft = Some(name);
+            }
+        }
+        ui.data_mut(|d| match draft {
+            Some(name) => {
+                d.insert_temp(key, name);
+            }
+            None => {
+                d.remove::<String>(key);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod bookmark_name_tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    #[test]
+    fn panel_renames_bookmarks_with_undo() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("bookmark.add", json!({"name": "Original"})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(500.0, 500.0)).build_ui_state(|ui, app| bookmarks(app, ui), app);
+        h.run_steps(3);
+        h.get_by_label("Rename").click();
+        h.run_steps(3);
+        h.get_by_role(egui::accesskit::Role::TextInput).click();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("Introduction".into()));
+        h.run_steps(3);
+        h.get_by_label("Save").click();
+        h.run_steps(3);
+        assert_eq!(h.state().session.doc().unwrap().doc.bookmarks[0].name, "Introduction");
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().session.doc().unwrap().doc.bookmarks[0].name, "Original");
     }
 }
 
