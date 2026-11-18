@@ -2,6 +2,8 @@
 
 ## Pending
 
+- Verify Text Anchors deletion, cropped names, page/x/y ordering and bookmark navigation in the app.
+
 ## Deferred / low priority
 
 - Rerun the full quality gate with UI fonts covering Japanese and Arabic.
@@ -17,7 +19,9 @@
 ## Test commands
 
 - cargo test -p designcraft-engine --lib bookmark
-- cargo test -p designcraft-ui-egui --lib panel_creates_a_text_destination_without_an_anchored_object
+- cargo test -p designcraft-engine --lib anchor
+- cargo test -p designcraft-ui-egui --lib text_anchor_panel_tests
+- cargo check -p designcraft-engine -p designcraft-ui-egui
 - cargo xtask ci
 
 ## External references

@@ -34,7 +34,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Text Anchor",
             [],
             None,
-            "{id} — refuses anchors used by bookmarks, hyperlinks or cross-references",
+            "{id, removeBookmarks?: bool} — optionally removes linked bookmarks; refuses anchors used by hyperlinks or cross-references",
             has_doc,
             delete_anchor
         ),
@@ -164,10 +164,11 @@ fn rename_anchor(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let id = p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("anchor.delete", "missing id"))?;
+    let remove_bookmarks = p.get("removeBookmarks").and_then(Value::as_bool).unwrap_or(false);
     s.edit(|d, sel| {
         if d.hyperlinks.iter().any(|h| h.dest == designcraft_doc::HyperlinkDest::Anchor(id))
             || d.stories.values().any(|st| st.xrefs.iter().any(|x| x.target == id))
-            || bookmark_uses(&d.bookmarks, id)
+            || (!remove_bookmarks && bookmark_uses(&d.bookmarks, id))
         {
             return Err(bad("anchor.delete", "remove bookmarks, hyperlinks and cross-references to this text anchor first"));
         }
@@ -175,6 +176,21 @@ fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         let end = pos.saturating_add(designcraft_doc::ANCHOR_MARK.len_utf8());
         d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.delete(pos..end);
         d.adjust_text_ranges(sid, pos..end, 0);
+        if remove_bookmarks {
+            let mut pending = vec![&mut d.bookmarks];
+            while let Some(bookmarks) = pending.pop() {
+                let mut i = 0;
+                while i < bookmarks.len() {
+                    if bookmarks.get(i).is_some_and(|b| b.anchor == Some(id)) {
+                        let removed = bookmarks.remove(i);
+                        bookmarks.splice(i..i, removed.children);
+                    } else {
+                        i += 1;
+                    }
+                }
+                pending.extend(bookmarks.iter_mut().map(|b| &mut b.children));
+            }
+        }
         if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell.is_none()) {
             let repair = |at: usize| if at > pos { at.saturating_sub(end - pos).max(pos) } else { at };
             t.anchor = repair(t.anchor);
@@ -210,14 +226,33 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
 
 fn list_anchors(s: &mut Session, _: &Value) -> Result<Value> {
     let d = s.doc()?.doc.clone();
-    let index = s.cache.xref_index(&d);
     let mut out = Vec::new();
-    for st in d.stories.values() {
+    for st in d.stories.values().filter(|st| !st.anchors.is_empty()) {
+        let cs = s.cache.get(&d, st.id, None);
         for a in &st.anchors {
-            out.push(json!({"id": a.id, "name": a.name, "story": st.id.0, "pos": st.anchor_pos(a.id), "page": index.page(a.id)}));
+            let pos = st.anchor_pos(a.id);
+            let place = pos.and_then(|pos| {
+                let (fi, x, baseline, ..) = designcraft_compose::caret(&cs, pos)?;
+                let ft = cs.frames.get(fi).filter(|ft| ft.range.contains(&pos))?;
+                let it = d.item(ft.frame)?;
+                let loc = d.find(ft.frame)?;
+                let designcraft_doc::SpreadRef::Doc(si) = loc.spread else { return None };
+                let point = designcraft_geom::Point::new(x, baseline);
+                let point = designcraft_compose::PathTextMap::new(it, ft).map_or(point, |map| map.to_path(point));
+                let point = d.parent_xf(&loc) * d.text_xf(it) * point;
+                let pi = d.spreads.get(si)?.page_at_x(point.x)?;
+                let page = d.first_page_of_spread(si).checked_add(pi)?;
+                Some((page, point))
+            });
+            let (page, x, y) = place.map_or((usize::MAX, f64::INFINITY, f64::INFINITY), |(page, point)| (page, point.x, point.y));
+            let value = json!({"id": a.id, "name": a.name, "story": st.id.0, "pos": pos, "page": place.map(|(page, _)| d.page_name(page))});
+            out.push(((page, x, y, st.id, pos, a.id), value));
         }
     }
-    Ok(Value::Array(out))
+    out.sort_by(|(a, _), (b, _)| {
+        a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)).then_with(|| a.2.total_cmp(&b.2)).then_with(|| (a.3, a.4, a.5).cmp(&(b.3, b.4, b.5)))
+    });
+    Ok(Value::Array(out.into_iter().map(|(_, value)| value).collect()))
 }
 
 fn define_format(s: &mut Session, p: &Value) -> Result<Value> {
@@ -254,6 +289,65 @@ fn set_format(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anchors_are_ordered_by_page_then_x_then_y() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let text = "Line\n".repeat(50);
+        let f = s.execute("frame.create", &json!({"rect": [36,36,236,66], "content": "text", "text": text})).unwrap();
+        s.execute("text.select", &json!({"story": f["story"], "anchor": text.len()})).unwrap();
+        s.execute("anchor.create", &json!({"name": "Overset"})).unwrap();
+        for (page, x, y, name) in [(1, 36, 36, "Next page"), (0, 300, 36, "Right"), (0, 36, 400, "Left lower"), (0, 36, 36, "Left upper")] {
+            let spread = s.doc().unwrap().doc.page_loc(page).unwrap().0;
+            let f = s.execute("frame.create", &json!({"spread": spread, "rect": [x,y,x+200,y+100], "content": "text", "text": "Heading"})).unwrap();
+            s.execute("text.select", &json!({"story": f["story"], "anchor": 0, "focus": 0})).unwrap();
+            s.execute("anchor.create", &json!({"name": name})).unwrap();
+        }
+        let list = s.execute("anchor.list", &json!({})).unwrap();
+        let names: Vec<_> = list.as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Left upper", "Left lower", "Right", "Next page", "Overset"]);
+        assert!(list[4]["page"].is_null());
+    }
+
+    #[test]
+    fn deleting_an_anchor_can_remove_its_bookmarks_atomically_and_preserve_children() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [36,36,300,200], "content": "text", "text": "Heading"})).unwrap();
+        s.execute("text.select", &json!({"story": f["story"], "anchor": 0})).unwrap();
+        let id = s.execute("anchor.create", &json!({"name": "Heading"})).unwrap()["id"].clone();
+        s.execute("bookmark.add", &json!({"anchor": id})).unwrap();
+        s.edit(|d, _| {
+            let target = d.bookmarks[0].clone();
+            let child = designcraft_doc::Bookmark { name: "Child".into(), anchor: None, page: 0, children: vec![], generated_by_toc: false };
+            d.bookmarks[0].children.push(child);
+            d.bookmarks.push(designcraft_doc::Bookmark {
+                name: "Parent".into(),
+                anchor: None,
+                page: 0,
+                children: vec![target],
+                generated_by_toc: false,
+            });
+            Ok(Value::Null)
+        })
+        .unwrap();
+        let before = s.doc().unwrap().doc.bookmarks.clone();
+        assert!(s.execute("anchor.delete", &json!({"id": id})).is_err());
+        s.execute("hyperlink.create", &json!({"anchor": id, "ids": [f["id"]]})).unwrap();
+        assert!(s.execute("anchor.delete", &json!({"id": id, "removeBookmarks": true})).is_err());
+        assert_eq!(serde_json::to_value(&s.doc().unwrap().doc.bookmarks).unwrap(), serde_json::to_value(&before).unwrap());
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("anchor.delete", &json!({"id": id, "removeBookmarks": true})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.story(StoryId(f["story"].as_u64().unwrap())).unwrap().text, "Heading");
+        assert_eq!(d.bookmarks[0].name, "Child");
+        assert_eq!(d.bookmarks[1].name, "Parent");
+        assert!(d.bookmarks[1].children.is_empty());
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&s.doc().unwrap().doc.bookmarks).unwrap(), serde_json::to_value(&before).unwrap());
+        assert_eq!(s.execute("anchor.list", &json!({})).unwrap()[0]["id"], id);
+    }
 
     #[test]
     fn manage_text_anchors_preserves_selected_text_and_references() {
