@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn find_dialog_ok_keeps_matches_and_does_not_repeat_changes() {
+    for (change, apply) in [("", false), ("blue", false), ("red red", true)] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "red red"})).unwrap();
+        let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+        app.run("app.findChange", json!({})).unwrap();
+        let d = app.ui.dialog.as_mut().unwrap();
+        d.fields.insert("find".into(), json!("red"));
+        d.fields.insert("change".into(), json!(change));
+        if apply {
+            let p = find_change_params(app.ui.dialog.as_ref().unwrap());
+            app.run("find.change", p).unwrap();
+        }
+        app.run("find.next", json!({"find": "red"})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        let undo = app.session.doc().unwrap().history.undo.len();
+        confirm(&mut app).unwrap();
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(app.session.doc().unwrap().doc, before);
+        assert_eq!(app.session.doc().unwrap().history.undo.len(), undo);
+        assert_eq!(app.session.doc().unwrap().doc.story(sid).unwrap().text, if apply { "red red red red" } else { "red red" });
+    }
+}
+
+#[test]
 fn paragraph_style_settings_show_captured_color_and_pending_spacing_without_changing_the_document() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
@@ -2958,15 +2984,14 @@ fn scope_confirm_case(action: &str) {
             );
         }
         "control" => {
-            assert_eq!(scope_control(&mut app, &ctx, "ui.dialog.confirm", json!({}))["count"], 2);
+            assert_eq!(scope_control(&mut app, &ctx, "ui.dialog.confirm", json!({})), Value::Null);
         }
         _ => panic!("known confirmation route"),
     }
     assert!(app.ui.dialog.is_none());
-    assert_eq!(app.session.doc().unwrap().doc.story(sid).unwrap().text, "blue blue | red");
-    // The closed dialog cannot leave its old seven-byte range for a later direct query.
-    let matches = app.run("find.find", json!({"find": "blue", "scope": "selection"})).unwrap();
-    assert_eq!(matches.as_array().unwrap().len(), 0);
+    assert_eq!(app.session.doc().unwrap().doc.story(sid).unwrap().text, "red red | red");
+    let matches = app.run("find.find", json!({"find": "red", "scope": "selection"})).unwrap();
+    assert_eq!(matches.as_array().unwrap().len(), 1);
 }
 
 #[test]

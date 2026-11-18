@@ -5741,10 +5741,8 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             r
         }
         "findChange" => {
-            let result = if d.b("objectMode") { Ok(Value::Null) } else { app.run("find.change", find_change_params(&d)) };
-            // Confirmation consumes retained bounds before closing, even on an error.
             app.session.reset_find_scope();
-            result
+            Ok(Value::Null)
         }
         CORNER_OPTIONS => {
             // The preview goes; the corners change once, as one undo step.
