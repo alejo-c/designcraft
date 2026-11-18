@@ -113,6 +113,7 @@ New workspace crates include `workspace = true` under `[lints]` in `Cargo.toml`.
 
 ## Text anchor bookmarks
 
+- External app integration and schema compatibility: docs/text-based-anchors-and-bookmarks.md.
 - Bookmark and anchor navigation symbols: docs/map/bookmarks.md.
 - Bookmark.anchor overrides Bookmark.page. Resolve its current layout page with Cache.xref_index for navigation and PDF export.
 - Missing or overset anchor destinations must not fall back to their stored page.
