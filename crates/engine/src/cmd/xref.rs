@@ -231,21 +231,9 @@ fn list_anchors(s: &mut Session, _: &Value) -> Result<Value> {
         let cs = s.cache.get(&d, st.id, None);
         for a in &st.anchors {
             let pos = st.anchor_pos(a.id);
-            let place = pos.and_then(|pos| {
-                let (fi, x, baseline, ..) = designcraft_compose::caret(&cs, pos)?;
-                let ft = cs.frames.get(fi).filter(|ft| ft.range.contains(&pos))?;
-                let it = d.item(ft.frame)?;
-                let loc = d.find(ft.frame)?;
-                let designcraft_doc::SpreadRef::Doc(si) = loc.spread else { return None };
-                let point = designcraft_geom::Point::new(x, baseline);
-                let point = designcraft_compose::PathTextMap::new(it, ft).map_or(point, |map| map.to_path(point));
-                let point = d.parent_xf(&loc) * d.text_xf(it) * point;
-                let pi = d.spreads.get(si)?.page_at_x(point.x)?;
-                let page = d.first_page_of_spread(si).checked_add(pi)?;
-                Some((page, point))
-            });
-            let (page, x, y) = place.map_or((usize::MAX, f64::INFINITY, f64::INFINITY), |(page, point)| (page, point.x, point.y));
-            let value = json!({"id": a.id, "name": a.name, "story": st.id.0, "pos": pos, "page": place.map(|(page, _)| d.page_name(page))});
+            let place = pos.and_then(|pos| designcraft_compose::xref::anchor_place(&d, &cs, pos));
+            let (page, x, y) = place.map_or((usize::MAX, f64::INFINITY, f64::INFINITY), |place| (place.page, place.point.x, place.point.y));
+            let value = json!({"id": a.id, "name": a.name, "story": st.id.0, "pos": pos, "page": place.map(|place| d.page_name(place.page))});
             out.push(((page, x, y, st.id, pos, a.id), value));
         }
     }

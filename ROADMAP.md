@@ -6,7 +6,7 @@
 - Find/Change confirmation closes the dialog without replacing or deleting matches; replacement buttons apply changes explicitly.
 - Find/Change exposes character and paragraph style selectors for both search criteria and replacement formatting.
 - ANCHOR3: Text Anchors panel reserves Delete beside cropped names, removes linked bookmarks with undo, sorts by page/x/y and centers text destinations.
-- Text anchor bookmarks follow reflow and same-document cut/paste in navigation and PDF outlines; enable Bookmark beside an anchor.
+- Text anchor bookmarks follow reflow and same-document cut/paste in navigation and PDF destinations; enable Bookmark beside an anchor.
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
@@ -402,6 +402,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-18** · PDF text-anchor hyperlink destinations and anchored bookmarks target the top of the anchor's composed line at its x position; page hyperlinks and page bookmarks keep their page destinations. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
 - **2026-11-15** · Format follow-ups to the craft-libs cutover (craft-libs#778; ported from #2734 by Dylan M. Taylor): IDML export keeps CDATA image contents and table spans such as `inf` reach the table edge; DOCX plain-text import leaves out deleted tracked changes and expands inline objects; an XLSX number cell that isn't a number shows as written; unmarked CMYK JPEGs keep the shared decoder's ink polarity; PPTX export writes exact opacity; PDF export repins craft-pdf and craft-prepress to craft-libs main. No readiness percentage change.

@@ -27,6 +27,17 @@ fn uncompressed(d: &Document, opts: PdfOptions) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// The `/XYZ` destination points in an uncompressed PDF, as the numbers written to the file.
+fn xyz_points(pdf: &str) -> Vec<(f32, f32)> {
+    pdf.split("/XYZ ")
+        .skip(1)
+        .filter_map(|part| {
+            let mut numbers = part.split_whitespace();
+            Some((numbers.next()?.parse().ok()?, numbers.next()?.parse().ok()?))
+        })
+        .collect()
+}
+
 /// Text of every page through hayro's interpreter (glyph → Unicode via ToUnicode / ActualText).
 pub(crate) fn extract_text(bytes: &[u8]) -> Vec<String> {
     use craft_pdf::syntax::Pdf;
@@ -813,6 +824,86 @@ fn link_annotation_export_refuses_non_web_schemes() {
     assert!(s.contains("https://example.com/button") && s.contains("https://example.com/link"), "safe links export: {s}");
     assert!(!s.contains("file:///etc/passwd"), "a file URL is not exported: {s}");
     assert!(!s.contains("javascript:"), "a javascript URL is not exported: {s}");
+}
+
+/// A link to a text anchor and an anchored bookmark land on the line the anchor's marker is
+/// composed on, not on the origin of its page. Page hyperlinks and page bookmarks still go to
+/// their page.
+#[test]
+fn text_destinations_use_the_anchor_position() {
+    use designcraft_doc::{Bookmark, Hyperlink, HyperlinkDest, HyperlinkSource};
+
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let (fid, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 100.0, 400.0, 300.0), lid, "Top\nMiddle\nBottom", ParaFormat::default()).unwrap();
+    let top = d.story_mut(sid).unwrap().insert_anchor(0, "Top");
+    let middle = {
+        let at = d.story(sid).unwrap().text.find("Middle").expect("Middle");
+        d.story_mut(sid).unwrap().insert_anchor(at, "Middle")
+    };
+    d.hyperlinks.push(Hyperlink { id: 1, name: "Top".into(), source: HyperlinkSource::Item { id: fid }, dest: HyperlinkDest::Anchor(top) });
+    d.hyperlinks.push(Hyperlink { id: 2, name: "Page two link".into(), source: HyperlinkSource::Item { id: fid }, dest: HyperlinkDest::Page(1) });
+    d.bookmarks.push(Bookmark { name: "Middle".into(), anchor: Some(middle), page: 0, children: vec![], generated_by_toc: false });
+    d.bookmarks.push(Bookmark { name: "Page one".into(), anchor: None, page: 0, children: vec![], generated_by_toc: false });
+    // An anchored bookmark whose marker is gone has no destination at all, not page 0.
+    d.bookmarks.push(Bookmark { name: "Gone".into(), anchor: Some(u64::MAX), page: 0, children: vec![], generated_by_toc: false });
+
+    let pdf = uncompressed(&d, PdfOptions::default());
+    let points = xyz_points(&pdf);
+    assert_eq!(points.len(), 4, "two text destinations and two page destinations: {points:?}");
+
+    let cache = Cache::new();
+    let page = d.spreads[0].pages[0].bounds();
+    let expected = |anchor: u64| {
+        let cs = cache.get(&d, sid, None);
+        let pos = d.find_anchor(anchor).unwrap().1;
+        let (fi, x, baseline, ascent, _) = designcraft_compose::caret(&cs, pos).unwrap();
+        let ft = &cs.frames[fi];
+        let item = d.item(ft.frame).unwrap();
+        let xf = d.parent_xf(&d.find(ft.frame).unwrap()) * d.text_xf(item);
+        let top = xf * designcraft_geom::Point::new(x, baseline - ascent);
+        ((top.x - page.x0) as f32, (page.height() - (top.y - page.y0)) as f32)
+    };
+    let near = |points: &[(f32, f32)], p: (f32, f32)| points.iter().any(|q| (q.0 - p.0).abs() < 0.1 && (q.1 - p.1).abs() < 0.1);
+    let (top_x, top_y) = expected(top);
+    let (middle_x, middle_y) = expected(middle);
+    assert!(top_y > middle_y && middle_y > 0.0, "the destinations follow the lines: {top_y} {middle_y}");
+    assert!(near(&points, (top_x, top_y)), "the link lands at its anchor: {points:?} vs {top_x} {top_y}");
+    assert!(near(&points, (middle_x, middle_y)), "the bookmark lands at its anchor: {points:?} vs {middle_x} {middle_y}");
+    let page_height = page.height() as f32;
+    assert_eq!(
+        points.iter().filter(|p| p.0 == 0.0 && p.1 == page_height).count(),
+        2,
+        "the page hyperlink and the page bookmark keep the page origin: {points:?}"
+    );
+}
+
+/// A transformed frame places its anchor through the item transform; the destination uses the
+/// same composed point as `anchor.list`.
+#[test]
+fn text_destinations_follow_the_composed_frame() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 220.0, 400.0, 360.0), lid, "Rotated", ParaFormat::default()).unwrap();
+    let id = d.story_mut(sid).unwrap().insert_anchor(0, "Rotated");
+    d.bookmarks.push(designcraft_doc::Bookmark { name: "Rotated".into(), anchor: Some(id), page: 0, children: vec![], generated_by_toc: false });
+    d.item_mut(fid).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::FRAC_PI_2);
+
+    let pdf = uncompressed(&d, PdfOptions::default());
+    let points = xyz_points(&pdf);
+    assert_eq!(points.len(), 1, "{points:?}");
+    let cache = Cache::new();
+    let cs = cache.get(&d, sid, None);
+    let pos = d.find_anchor(id).unwrap().1;
+    let (fi, x, baseline, ascent, _) = designcraft_compose::caret(&cs, pos).unwrap();
+    let ft = &cs.frames[fi];
+    let item = d.item(ft.frame).unwrap();
+    let xf = d.parent_xf(&d.find(ft.frame).unwrap()) * d.text_xf(item);
+    let top = xf * designcraft_geom::Point::new(x, baseline - ascent);
+    let page = d.spreads[0].pages[0].bounds();
+    let expected = ((top.x - page.x0) as f32, (page.height() - (top.y - page.y0)) as f32);
+    assert!((points[0].0 - expected.0).abs() < 0.1 && (points[0].1 - expected.1).abs() < 0.1, "{points:?} vs {expected:?}");
 }
 
 /// A clipping path on a placed image becomes a clip in the page content, inside the frame's.
