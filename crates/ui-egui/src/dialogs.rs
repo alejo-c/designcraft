@@ -3610,8 +3610,33 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 check(ui, &mut d, "caseSensitive", crate::i18n::tr(&app.ui.language, "Case sensitive"));
                                 check(ui, &mut d, "wholeWord", crate::i18n::tr(&app.ui.language, "Whole word"));
                             });
-                            format_box(&app.ui.language, ui, &mut d, true);
-                            format_box(&app.ui.language, ui, &mut d, false);
+                            for (key, find, title) in [(FIND_FORMAT, true, "Find styles"), (CHANGE_FORMAT, false, "Change styles")] {
+                                format_box(&app.ui.language, ui, &mut d, find);
+                                if let Some(doc) = app.session.active().map(|st| st.doc.clone()) {
+                                    ui.push_id(("inline_styles", key), |ui| {
+                                        ui.collapsing(crate::i18n::tr(&app.ui.language, title), |ui| {
+                                            let mut fd = Dialog::new("formatStyles", d.fields.get(key).cloned().unwrap_or_else(|| json!({})));
+                                            format_style_options(&app.ui.language, ui, &mut fd, &doc.styles);
+                                            let mut format = d.fields.get(key).and_then(Value::as_object).cloned().unwrap_or_default();
+                                            for style in ["charStyle", "paraStyle"] {
+                                                match fd.fields.get(style) {
+                                                    Some(value) => {
+                                                        format.insert(style.into(), value.clone());
+                                                    }
+                                                    None => {
+                                                        format.remove(style);
+                                                    }
+                                                }
+                                            }
+                                            if format.is_empty() {
+                                                d.fields.remove(key);
+                                            } else {
+                                                d.fields.insert(key.into(), Value::Object(format));
+                                            }
+                                        });
+                                    });
+                                }
+                            }
                             ui.horizontal(|ui| {
                                 let params0 = find_change_params(&d);
                                 let params = || params0.clone();
@@ -4850,19 +4875,24 @@ fn format_style_options(lang: &str, ui: &mut egui::Ui, fd: &mut Dialog, styles: 
     let paras: Vec<&str> = styles.paragraph.iter().map(|s| s.name.as_str()).collect();
     egui::Grid::new("format_style_options").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         for (key, label, names) in [("charStyle", "Character Style:", &chars), ("paraStyle", "Paragraph Style:", &paras)] {
-            crate::rtl::label(ui, crate::i18n::tr(lang, label));
+            let label = crate::rtl::label(ui, crate::i18n::tr(lang, label));
             let cur = fd.fields.get(key).and_then(Value::as_str).map(str::to_string);
             let shown = cur.as_deref().map_or_else(|| any.to_string(), |n| crate::i18n::style_name(lang, n).to_string());
-            craft_ui::ComboBox::from_id_salt(("format_style", key)).selected_text(crate::rtl::widget(ui, shown)).width(240.0).show_ui(ui, |ui| {
-                if ui.selectable_label(cur.is_none(), crate::rtl::widget(ui, any)).clicked() {
-                    fd.fields.remove(key);
-                }
-                for n in names.iter() {
-                    if ui.selectable_label(cur.as_deref() == Some(*n), crate::rtl::widget(ui, crate::i18n::style_name(lang, n))).clicked() {
-                        fd.fields.insert(key.into(), json!(n));
+            craft_ui::ComboBox::from_id_salt(("format_style", key))
+                .selected_text(crate::rtl::widget(ui, shown))
+                .width(240.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(cur.is_none(), crate::rtl::widget(ui, any)).clicked() {
+                        fd.fields.remove(key);
                     }
-                }
-            });
+                    for n in names.iter() {
+                        if ui.selectable_label(cur.as_deref() == Some(*n), crate::rtl::widget(ui, crate::i18n::style_name(lang, n))).clicked() {
+                            fd.fields.insert(key.into(), json!(n));
+                        }
+                    }
+                })
+                .response
+                .labelled_by(label.id);
             ui.end_row();
         }
     });

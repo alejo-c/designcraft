@@ -27,6 +27,60 @@ fn find_dialog_ok_keeps_matches_and_does_not_repeat_changes() {
 }
 
 #[test]
+fn find_replace_styles_selects_and_changes_both_style_kinds() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36,36,300,200], "content": "text", "text": "target\nother"})).unwrap();
+    let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+    for name in ["Source character", "Target character"] {
+        app.run("style.character.create", json!({"name": name})).unwrap();
+    }
+    for name in ["Source paragraph", "Target paragraph"] {
+        app.run("style.paragraph.create", json!({"name": name})).unwrap();
+    }
+    app.run("text.select", json!({"story": sid.0, "anchor": 0, "focus": 6})).unwrap();
+    app.run("style.character.apply", json!({"name": "Source character"})).unwrap();
+    app.run("style.paragraph.apply", json!({"name": "Source paragraph"})).unwrap();
+    app.run("app.findChange", json!({})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 1200.0)).build_ui_state(
+        |ui, app| {
+            let key = egui::Id::unique("find_style_test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    for (label, names) in [("Find styles", ["Source character", "Source paragraph"]), ("Change styles", ["Target character", "Target paragraph"])] {
+        h.get_by_label(label).click();
+        h.run_steps(3);
+        for name in names {
+            h.get_all_by_value("[Any Style]").next().unwrap().click();
+            h.run_steps(3);
+            h.get_by_label(name).click();
+            h.run_steps(3);
+        }
+        h.get_by_label(label).click();
+        h.run_steps(3);
+    }
+    h.get_by_label("Count").click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("status"), "1 match(es)");
+    h.get_by_label("Change All").click();
+    h.run_steps(3);
+    let st = h.state().session.doc().unwrap().doc.story(sid).unwrap();
+    assert_eq!(st.text, "target\nother");
+    assert_eq!(st.format_after(0).style, "Target character");
+    assert_eq!(st.paras[0].style, "Target paragraph");
+    assert_ne!(st.paras[1].style, "Target paragraph");
+}
+
+#[test]
 fn paragraph_style_settings_show_captured_color_and_pending_spacing_without_changing_the_document() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
