@@ -91,24 +91,62 @@ pub fn bookmarks(app: &mut DesignApp, ui: &mut egui::Ui) {
     for (i, b) in list.iter().enumerate() {
         let page = b["page"].as_u64().and_then(|p| usize::try_from(p).ok());
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(page.is_some(), egui::Button::selectable(false, b["name"].as_str().unwrap_or("")))
-                .on_hover_text(
-                    page.map(|p| format!("{} {}", crate::i18n::tr(&app.ui.language, "Page"), app.session.page_label(p)))
-                        .unwrap_or_else(|| "Unresolved text anchor".into()),
-                )
-                .clicked()
-                && let Some(page) = page
-            {
-                crate::canvas::go_to_page(app, page);
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete"))).clicked() {
                     let _ = app.run("bookmark.delete", json!({"index": i}));
                 }
+                if ui
+                    .add_enabled(page.is_some(), egui::Button::selectable(false, b["name"].as_str().unwrap_or("")).truncate())
+                    .on_hover_text(
+                        page.map(|p| format!("{} {}", crate::i18n::tr(&app.ui.language, "Page"), app.session.page_label(p)))
+                            .unwrap_or_else(|| "Unresolved text anchor".into()),
+                    )
+                    .clicked()
+                    && let Some(page) = page
+                {
+                    if let Some(anchor) = b["anchor"].as_u64() {
+                        go_to_anchor(app, anchor);
+                    } else {
+                        crate::canvas::go_to_page(app, page);
+                    }
+                }
             });
         });
     }
+}
+
+fn go_to_anchor(app: &mut DesignApp, id: u64) {
+    let destination = (|| {
+        let doc = &app.session.active()?.doc;
+        let (story, pos) = doc.find_anchor(id)?;
+        let cs = app.session.cache.get(doc, story, None);
+        let (fi, x, baseline, asc, desc) = designcraft_compose::caret(&cs, pos)?;
+        let ft = cs.frames.get(fi).filter(|ft| ft.range.contains(&pos))?;
+        let it = doc.item(ft.frame)?;
+        let loc = doc.find(ft.frame)?;
+        let designcraft_doc::SpreadRef::Doc(_) = loc.spread else { return None };
+        let xf = doc.parent_xf(&loc) * doc.text_xf(it);
+        let on = |p| designcraft_compose::PathTextMap::new(it, ft).map_or(p, |map| map.to_path(p));
+        let p0 = xf * on(designcraft_geom::Point::new(x, baseline - asc));
+        let p1 = xf * on(designcraft_geom::Point::new(x, baseline + desc));
+        let rect = designcraft_geom::Rect::new(p0.x.min(p1.x), p0.y.min(p1.y), p0.x.max(p1.x), p0.y.max(p1.y));
+        Some((story, pos, loc.spread, rect))
+    })();
+    let Some((story, pos, spread, rect)) = destination else { return };
+    if app.session.active().is_some_and(|st| st.editing_parents)
+        && let Err(e) = app.run("layout.parents.edit", json!({"on": false}))
+    {
+        app.status_error("Text Anchors", e);
+        return;
+    }
+    if let Err(e) = app.run("text.select", json!({"story": story.0, "anchor": pos, "focus": pos})) {
+        app.status_error("Text Anchors", e);
+        return;
+    }
+    if let Some(view) = app.view_mut() {
+        view.fitted = true;
+    }
+    crate::canvas::go_to_spread_rect(app, spread, rect);
 }
 
 pub fn text_anchors(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -116,7 +154,7 @@ pub fn text_anchors(app: &mut DesignApp, ui: &mut egui::Ui) {
     let key = egui::Id::unique(("text_anchor_name", app.session.active().map(|d| d.uid)));
     let mut name: String = ui.data(|d| d.get_temp(key)).unwrap_or_default();
     let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
-    ui.add(egui::TextEdit::singleline(&mut name)).labelled_by(label.id);
+    ui.add(egui::TextEdit::singleline(&mut name).desired_width(ui.available_width())).labelled_by(label.id);
     let has_text = app.session.active().is_some_and(|d| d.selection.text.is_some_and(|t| t.cell.is_none()));
     if ui.add_enabled(has_text && !name.trim().is_empty(), egui::Button::new(crate::i18n::tr(&app.ui.language, "New Text Anchor"))).clicked() {
         match app.run("anchor.create", json!({"name": name})) {
@@ -143,16 +181,19 @@ pub fn text_anchors(app: &mut DesignApp, ui: &mut egui::Ui) {
                         app.status_error("Text Anchors", e);
                     }
                 }
-                if ui.selectable_label(false, a["name"].as_str().unwrap_or("")).clicked()
-                    && app.run("text.select", json!({"story": a["story"], "anchor": a["pos"], "focus": a["pos"]})).is_ok()
-                {
-                    let _ = app.run("view.fitSelection", json!({}));
-                }
-                if ui.small_button(crate::i18n::tr(&app.ui.language, "Delete")).clicked()
-                    && let Err(e) = app.run("anchor.delete", json!({"id": id}))
-                {
-                    app.status_error("Text Anchors", e);
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button(crate::i18n::tr(&app.ui.language, "Delete")).clicked()
+                        && let Err(e) = app.run("anchor.delete", json!({"id": id, "removeBookmarks": true}))
+                    {
+                        app.status_error("Text Anchors", e);
+                    }
+                    let name = a["name"].as_str().unwrap_or("");
+                    if ui.add_enabled(!a["page"].is_null(), egui::Button::selectable(false, name).truncate()).on_hover_text(name).clicked()
+                        && let Some(id) = id.as_u64()
+                    {
+                        go_to_anchor(app, id);
+                    }
+                });
             });
             let edit_key = key.with(id.to_string());
             let mut draft: String = ui.data(|d| d.get_temp(edit_key)).unwrap_or_else(|| a["name"].as_str().unwrap_or("").to_string());
@@ -178,7 +219,109 @@ pub fn text_anchors(app: &mut DesignApp, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod text_anchor_panel_tests {
     use super::*;
-    use egui_kittest::{Harness, kittest::Queryable};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+
+    #[test]
+    fn long_anchor_names_leave_delete_visible_and_deletion_is_undoable() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [36,36,300,200], "content": "text", "text": "Heading"})).unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 0})).unwrap();
+        let name = "An anchor name that is much too long to fit inside the narrow Text Anchors panel";
+        let anchor = app.run("anchor.create", json!({"name": name})).unwrap();
+        app.run("bookmark.add", json!({"anchor": anchor["id"]})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(280.0, 500.0)).build_ui_state(|ui, app| text_anchors(app, ui), app);
+        h.run_steps(3);
+        let delete = h.get_by_label("Delete");
+        assert!(delete.rect().right() <= 280.0, "{:?}", delete.rect());
+        assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == name && text.galley.elided)));
+        if let Some(path) = std::env::var_os("DESIGNCRAFT_ANCHOR_NARROW_SHOT") {
+            h.render().unwrap().save(path).unwrap();
+        }
+        let delete = h.get_by_label("Delete");
+        delete.click();
+        h.run_steps(3);
+        assert!(h.state().session.doc().unwrap().doc.stories.values().all(|st| st.anchors.is_empty()));
+        assert!(h.state().session.doc().unwrap().doc.bookmarks.is_empty());
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().session.doc().unwrap().doc.stories.values().next().unwrap().anchors[0].name, name);
+        assert_eq!(h.state().session.doc().unwrap().doc.bookmarks[0].anchor, anchor["id"].as_u64());
+    }
+
+    #[test]
+    fn anchor_and_bookmark_clicks_select_and_centre_the_anchor() {
+        for (panel_name, panel) in [("Bookmarks", bookmarks as fn(&mut DesignApp, &mut egui::Ui)), ("Text Anchors", text_anchors)] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+            let spread = app.session.doc().unwrap().doc.page_loc(1).unwrap().0;
+            let f = app
+                .run("frame.create", json!({"spread": spread, "rect": [72,500,372,700], "content": "text", "text": "First line\nDestination"}))
+                .unwrap();
+            let pos = "First line\n".len();
+            app.run("text.select", json!({"story": f["story"], "anchor": pos, "focus": pos})).unwrap();
+            let anchor = app.run("anchor.create", json!({"name": "Destination"})).unwrap();
+            app.run("bookmark.add", json!({"anchor": anchor["id"]})).unwrap();
+            app.run("layout.parents.edit", json!({"on": true})).unwrap();
+            assert_eq!(app.session.execute("bookmark.list", &json!({})).unwrap()[0]["page"], 1);
+            let d = &app.session.doc().unwrap().doc;
+            let (sid, at) = d.find_anchor(anchor["id"].as_u64().unwrap()).unwrap();
+            let composed = app.session.cache.get(d, sid, None);
+            let (fi, ..) = designcraft_compose::caret(&composed, at).unwrap();
+            assert!(composed.frames[fi].range.contains(&at), "{panel_name}: anchor {at}, frame range {:?}", composed.frames[fi].range);
+            app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0)));
+            let view = app.view_mut().unwrap();
+            view.zoom = 2.0;
+            view.fitted = true;
+            let mut h = Harness::builder().with_size(egui::vec2(280.0, 500.0)).build_ui_state(|ui, app| panel(app, ui), app);
+            h.run_steps(3);
+            assert!(!h.get_by_label("Destination").accesskit_node().is_disabled(), "{panel_name}");
+            h.get_by_label("Destination").click();
+            h.run_steps(3);
+            let app = h.state();
+            assert!(!app.session.doc().unwrap().editing_parents, "{panel_name}");
+            let ts = app.session.doc().unwrap().selection.text.expect("bookmark selects its text destination");
+            assert_eq!(ts.story.0, f["story"].as_u64().unwrap());
+            assert_eq!((ts.anchor, ts.focus), (pos, pos));
+            let doc = &app.session.doc().unwrap().doc;
+            let cs = app.session.cache.get(doc, ts.story, None);
+            let (fi, x, baseline, asc, desc) = designcraft_compose::caret(&cs, pos).unwrap();
+            let it = doc.item(cs.frames[fi].frame).unwrap();
+            let p = doc.text_xf(it) * designcraft_geom::Point::new(x, baseline + (desc - asc) / 2.0);
+            let layout = designcraft_tools::CanvasLayout::new(doc, false);
+            let p = layout.slot(designcraft_doc::SpreadRef::Doc(spread)).unwrap().xf * p;
+            let view = app.view().unwrap();
+            assert_eq!(view.zoom, 2.0);
+            assert!((view.origin.y + 100.0 - p.y).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn long_page_bookmark_names_leave_delete_visible_and_keep_page_navigation() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+        let name = "A page bookmark with a name that extends beyond the narrow Bookmarks panel";
+        app.run("bookmark.add", json!({"name": name, "page": 2})).unwrap();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0)));
+        app.view_mut().unwrap().fitted = true;
+        let mut h = Harness::builder().with_size(egui::vec2(280.0, 500.0)).build_ui_state(|ui, app| bookmarks(app, ui), app);
+        h.run_steps(3);
+        assert!(h.get_by_label("Delete").rect().right() <= 280.0);
+        h.get_by_label(name).click();
+        h.run_steps(3);
+        let app = h.state();
+        assert!(app.session.doc().unwrap().selection.text.is_none());
+        let doc = &app.session.doc().unwrap().doc;
+        let layout = designcraft_tools::CanvasLayout::new(doc, false);
+        let centre = layout.page_rect(doc, 1).unwrap().center();
+        let view = app.view().unwrap();
+        assert!((view.origin.y + 200.0 / view.zoom - centre.y).abs() < 1e-6);
+        h.get_by_label("Delete").click();
+        h.run_steps(3);
+        assert!(h.state().session.doc().unwrap().doc.bookmarks.is_empty());
+    }
 
     #[test]
     fn panel_creates_a_text_destination_without_an_anchored_object() {

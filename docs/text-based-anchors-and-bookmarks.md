@@ -41,13 +41,16 @@ Check the response's ok field and use result only on success. The transport is d
 
 The Text Anchors panel's Bookmark checkbox uses bookmark.add with the existing anchor's ID. The Bookmarks panel's creation button uses the selected-text shortcut.
 
+Clicking a text anchor or its bookmark selects the anchor's current text position and centers that position in the canvas while preserving zoom. Legacy page bookmarks still navigate to their page. Long names are truncated at the end to keep Delete visible.
+
 ## Reading destinations correctly
 
 - bookmark.list returns name, anchor, page, generatedByToc, and children. Its page is the current absolute page index, starting at zero, or null when an anchor cannot be resolved. Its anchor is the numeric target ID or null for a page bookmark. These destination rules also apply to returned children.
 - anchor.list returns id, name, story, pos, and page. Its pos is the marker's current UTF-8 byte offset. Its page is a page label string, or null, not the numeric page index returned by bookmark.list.
+- anchor.list orders resolved anchors by absolute page index, then increasing composed x coordinate, then increasing composed y coordinate. Unresolved anchors follow resolved destinations; story, marker position and anchor identity break ties deterministically.
 - A page label can include section numbering. Do not convert anchor.list.page into an absolute page index or assume it is a decimal number.
 - Treat both pos and the resolved page as current observations. Re-query after edits; do not persist either as the identity of the destination.
-- Internally, Cache.xref_index(document).page_index(anchor_id) resolves the composed destination page. Navigation and PDF outlines use that result, ignoring Bookmark.page for anchored bookmarks.
+- Internally, Cache.xref_index(document).page_index(anchor_id) resolves the composed destination page for bookmark queries and PDF outlines. Panel navigation resolves the current caret geometry from composition. Both ignore Bookmark.page for anchored bookmarks.
 - If the marker is deleted or its location is overset, the bookmark can become unresolved. Display that state and disable navigation; do not redirect to its stored page. PDF export skips an unresolved destination, and also skips a destination whose page was not exported.
 
 ## Saved document JSON and direct Rust consumers
@@ -68,7 +71,7 @@ Prefer engine commands for creation and editing. They insert markers, maintain t
 - For a cut/paste move, include the anchor marker with the text and use DesignCraft's formatted edit.cut/edit.paste workflow within the same document. The engine preserves an absent original anchor ID for that move. A plain-text transfer, external delete/reinsert, or a move to another document does not provide that identity guarantee.
 - Copy/paste allocates fresh anchor IDs for the copy. Existing bookmarks continue targeting the original anchor; they are not duplicated or redirected automatically. The receiving app must intentionally create a bookmark for a copied destination if desired.
 - Anchor creation inserts a marker, so byte offsets at and after the insertion shift. Re-query positions rather than reusing an offset map calculated before creating anchors.
-- anchor.delete refuses anchors referenced by bookmarks, hyperlinks or cross-references. Remove those references first. Deleting story text containing the marker can still leave a bookmark unresolved.
+- anchor.delete accepts id and optional removeBookmarks. By default it refuses anchors referenced by bookmarks, hyperlinks or cross-references. With removeBookmarks set to true, it deletes the anchor and every linked bookmark atomically, promoting surviving bookmark children into the removed bookmark's parent. Hyperlinks and cross-references still block deletion without changing the document. The Text Anchors panel uses this option; one undo restores the anchor and bookmarks. Deleting story text containing the marker can still leave a bookmark unresolved.
 - Native save/reopen preserves the anchor relationship. Bookmarks are not currently imported or exported through IDML. Do not use an IDML round trip to preserve the bookmark list.
 - TOC-generated bookmarks still use page destinations with anchor absent. To create text-based bookmarks from another app, use the explicit anchor workflow rather than assuming TOC generation produces them.
 

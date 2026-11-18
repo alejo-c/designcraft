@@ -1,6 +1,6 @@
 # DesignCraft roadmap
 
-- Text Anchors panel creates destinations on selected text, navigates, renames and deletes unused anchors with undo support.
+- ANCHOR3: Text Anchors panel reserves Delete beside cropped names, removes linked bookmarks with undo, sorts by page/x/y and centers text destinations.
 - Text anchor bookmarks follow reflow and same-document cut/paste in navigation and PDF outlines; enable Bookmark beside an anchor.
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
