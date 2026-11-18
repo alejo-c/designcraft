@@ -115,7 +115,7 @@ New workspace crates include `workspace = true` under `[lints]` in `Cargo.toml`.
 
 - External app integration and schema compatibility: docs/text-based-anchors-and-bookmarks.md.
 - Bookmark and anchor navigation symbols: docs/map/bookmarks.md.
-- Bookmark.anchor overrides Bookmark.page. Resolve current destinations from composition: caret geometry for panel navigation, Cache.xref_index for page queries and PDF export.
+- Bookmark.anchor overrides Bookmark.page. Resolve current destinations from composition: caret geometry for panel navigation, Cache.xref_index for page and point queries, PDF links and PDF outlines.
 - Missing or overset anchor destinations must not fall back to their stored page.
 - Same-document cut/paste preserves anchor identities; copies need fresh document-unique identities.
 - Text Anchors ordering is page, then x, then y; anchors in another column must not sort by y alone.

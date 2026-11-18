@@ -4,3 +4,4 @@
 - Documented text anchor bookmark schema, external command workflow, compatibility, destination resolution and movement constraints.
 - Text Anchors gained linked-bookmark deletion, cropped names, page/x/y ordering and caret navigation with regression coverage.
 - Text Anchors: user confirmed cargo xtask ci completed without errors.
+- PDF text anchor links and anchored bookmarks target the anchor line; page destinations stay pages.

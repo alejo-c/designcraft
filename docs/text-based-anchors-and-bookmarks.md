@@ -43,6 +43,8 @@ The Text Anchors panel's Bookmark checkbox uses bookmark.add with the existing a
 
 Clicking a text anchor or its bookmark selects the anchor's current text position and centers that position in the canvas while preserving zoom. Legacy page bookmarks still navigate to their page. Long names are truncated at the end to keep Delete visible.
 
+In an exported PDF, a hyperlink to a text anchor and a bookmark anchored in text jump to the top of the anchor's composed line, at the anchor's x position, rather than to the top of the page. Page hyperlinks and page bookmarks keep their page destinations. A link or bookmark whose anchor is unresolved or on a page that was not exported is left out.
+
 ## Reading destinations correctly
 
 - bookmark.list returns name, anchor, page, generatedByToc, and children. Its page is the current absolute page index, starting at zero, or null when an anchor cannot be resolved. Its anchor is the numeric target ID or null for a page bookmark. These destination rules also apply to returned children.
@@ -50,7 +52,7 @@ Clicking a text anchor or its bookmark selects the anchor's current text positio
 - anchor.list orders resolved anchors by absolute page index, then increasing composed x coordinate, then increasing composed y coordinate. Unresolved anchors follow resolved destinations; story, marker position and anchor identity break ties deterministically.
 - A page label can include section numbering. Do not convert anchor.list.page into an absolute page index or assume it is a decimal number.
 - Treat both pos and the resolved page as current observations. Re-query after edits; do not persist either as the identity of the destination.
-- Internally, Cache.xref_index(document).page_index(anchor_id) resolves the composed destination page for bookmark queries and PDF outlines. Panel navigation resolves the current caret geometry from composition. Both ignore Bookmark.page for anchored bookmarks.
+- Internally, Cache.xref_index(document).place(anchor_id) resolves the composed destination page, caret x and line top for bookmark queries and PDF outlines. Panel navigation resolves the current caret geometry from composition. Both ignore Bookmark.page for anchored bookmarks.
 - If the marker is deleted or its location is overset, the bookmark can become unresolved. Display that state and disable navigation; do not redirect to its stored page. PDF export skips an unresolved destination, and also skips a destination whose page was not exported.
 
 ## Saved document JSON and direct Rust consumers
@@ -77,10 +79,10 @@ Prefer engine commands for creation and editing. They insert markers, maintain t
 
 ## Integration checks
 
-- Create an anchor and bookmark, then insert enough text before it to move it to another page. Confirm bookmark.list reports the new page and the exported PDF outline targets that page.
+- Create an anchor and bookmark, then insert enough text before it to move it to another page. Confirm bookmark.list reports the new page and the exported PDF outline targets that page, with its destination at the anchor's line rather than the page origin.
 - Save and reopen the native document, then confirm the same anchor ID is still referenced.
 - Cut and paste the text with its marker within the document; confirm the bookmark follows. Copy it instead; confirm the bookmark remains on the original destination.
 - Delete the marker or make its destination overset; confirm page becomes null rather than falling back to the stored page.
 - Load an old page bookmark and confirm the integration preserves its page semantics until it is deliberately migrated.
 
-Implementation references: crates/doc/src/lib.rs (Bookmark and Document.bookmarks), crates/doc/src/story.rs (Story.anchors), crates/doc/src/xref.rs (TextAnchor and marker positions), crates/engine/src/cmd/interactive.rs (bookmark commands), crates/engine/src/cmd/xref.rs (anchor commands), crates/engine/src/cmd/edit.rs (clipboard identity), crates/compose/src/xref.rs (page resolution), and crates/pdf/src/links.rs (PDF outlines).
+Implementation references: crates/doc/src/lib.rs (Bookmark and Document.bookmarks), crates/doc/src/story.rs (Story.anchors), crates/doc/src/xref.rs (TextAnchor and marker positions), crates/engine/src/cmd/interactive.rs (bookmark commands), crates/engine/src/cmd/xref.rs (anchor commands), crates/engine/src/cmd/edit.rs (clipboard identity), crates/compose/src/xref.rs (anchor placement), and crates/pdf/src/links.rs (PDF destinations and outlines).

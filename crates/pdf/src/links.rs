@@ -25,6 +25,18 @@ pub(crate) fn sheet_of_page(doc: &Document, sheets: &[Sheet], abs: usize) -> Opt
     sheets.iter().position(|s| s.spread == si && s.trim.x0 <= page.center().x && page.center().x <= s.trim.x1)
 }
 
+/// A destination at the top of the line holding text anchor `anchor`, on the sheet that shows it.
+fn anchor_destination(doc: &Document, sheets: &[Sheet], index: &designcraft_compose::xref::XrefIndex, anchor: u64) -> Option<XyzDestination> {
+    let place = index.place(anchor)?;
+    let i = sheet_of_page(doc, sheets, place.page)?;
+    let sh = sheets.get(i)?;
+    // A viewer puts this point at the window's top left: the line's top keeps the anchored text
+    // itself in view, at the anchor's place along the line.
+    let x = place.line_top.x - sh.media.x0;
+    let y = place.line_top.y - sh.media.y0;
+    (x.is_finite() && y.is_finite()).then(|| XyzDestination::new(i, krilla::geom::Point::from_xy(x as f32, y as f32)))
+}
+
 /// Spread-space rectangles covered by a hyperlink source on spread `si`.
 fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &HyperlinkSource, si: usize) -> Vec<Rect> {
     match src {
@@ -180,9 +192,9 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
                     Some(i) => Target::Destination(XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)).into()),
                     None => continue,
                 },
-                // The page the anchor's text has landed on, as a cross-reference resolves it.
-                HyperlinkDest::Anchor(a) => match cache.xref_index(doc).page_index(*a).and_then(|p| sheet_of_page(doc, sheets, p)) {
-                    Some(i) => Target::Destination(XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)).into()),
+                // The line the anchor's text has landed on.
+                HyperlinkDest::Anchor(a) => match anchor_destination(doc, sheets, &cache.xref_index(doc), *a) {
+                    Some(d) => Target::Destination(d.into()),
                     None => continue,
                 },
             };
@@ -252,15 +264,17 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
 
 /// The document outline from the bookmarks (bookmarks to pages that weren't exported are skipped).
 pub(crate) fn outline(doc: &Document, sheets: &[Sheet], cache: &designcraft_compose::Cache) -> Option<Outline> {
-    fn node(doc: &Document, sheets: &[Sheet], b: &Bookmark, index: &designcraft_compose::xref::XrefIndex) -> Option<OutlineNode> {
-        let page = match b.anchor {
-            Some(a) => index.page_index(a)?,
-            None => b.page,
+    fn node(doc: &Document, sheets: &[Sheet], index: &designcraft_compose::xref::XrefIndex, b: &Bookmark) -> Option<OutlineNode> {
+        let destination = match b.anchor {
+            Some(a) => anchor_destination(doc, sheets, index, a)?,
+            None => {
+                let i = sheet_of_page(doc, sheets, b.page)?;
+                XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0))
+            }
         };
-        let i = sheet_of_page(doc, sheets, page)?;
-        let mut n = OutlineNode::new(b.name.clone(), XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)));
+        let mut n = OutlineNode::new(b.name.clone(), destination);
         for c in &b.children {
-            if let Some(cn) = node(doc, sheets, c, index) {
+            if let Some(cn) = node(doc, sheets, index, c) {
                 n.push_child(cn);
             }
         }
@@ -272,7 +286,7 @@ pub(crate) fn outline(doc: &Document, sheets: &[Sheet], cache: &designcraft_comp
     let mut o = Outline::new();
     let index = cache.xref_index(doc);
     for b in &doc.bookmarks {
-        if let Some(n) = node(doc, sheets, b, &index) {
+        if let Some(n) = node(doc, sheets, &index, b) {
             o.push_child(n);
         }
     }
