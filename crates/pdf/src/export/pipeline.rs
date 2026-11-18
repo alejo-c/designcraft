@@ -237,7 +237,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     if ex.rgb_only {
         ex.warn("PDF/A: CMYK colours were converted to RGB (no CMYK output intent profile is available yet)");
     }
-    if let Some(o) = crate::links::outline(doc, &sheets) {
+    if let Some(o) = crate::links::outline(doc, &sheets, cache) {
         pdf.set_outline(o);
     }
     for (sheet_idx, sh) in sheets.iter().enumerate() {

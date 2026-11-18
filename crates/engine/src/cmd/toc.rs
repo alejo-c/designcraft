@@ -322,7 +322,13 @@ fn bookmarks(found: &[Found]) -> Vec<designcraft_doc::Bookmark> {
         let mut out = Vec::new();
         while iter.peek().is_some_and(|f| f.level > parent) {
             let Some(f) = iter.next() else { break };
-            out.push(designcraft_doc::Bookmark { name: f.text.clone(), page: f.key.0, children: children(iter, f.level), generated_by_toc: true });
+            out.push(designcraft_doc::Bookmark {
+                name: f.text.clone(),
+                anchor: None,
+                page: f.key.0,
+                children: children(iter, f.level),
+                generated_by_toc: true,
+            });
         }
         out
     }

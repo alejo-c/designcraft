@@ -111,6 +111,13 @@ People trust DesignCraft with their layouts; a crash loses their work. **This ou
 
 New workspace crates include `workspace = true` under `[lints]` in `Cargo.toml`. Production crate roots declare the crate-level lint attributes before modules; crate-level `//!` documentation may precede them.
 
+## Text anchor bookmarks
+
+- Bookmark and anchor navigation symbols: docs/map/bookmarks.md.
+- Bookmark.anchor overrides Bookmark.page. Resolve its current layout page with Cache.xref_index for navigation and PDF export.
+- Missing or overset anchor destinations must not fall back to their stored page.
+- Same-document cut/paste preserves anchor identities; copies need fresh document-unique identities.
+
 ## Shared libraries
 
 Before adding or changing file-format, codec, protocol, or reusable UI code, check `storytold/craft-libs` and its open PRs first; reuse or extend the shared library rather than duplicating it locally, keep app-specific policy and model mapping in the app, and preserve behavior, security/resource limits, attribution, and regression coverage during cutovers.

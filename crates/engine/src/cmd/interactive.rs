@@ -65,19 +65,63 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(Value::Null)
             })
         }),
-        cmd!("bookmark.add", "New Bookmark", [], None, "{name?, page? (1-based; default: current selection's page or 1)}", has_doc, |s, p| {
-            let page = p.get("page").and_then(Value::as_u64).map(|v| (v as usize).saturating_sub(1)).unwrap_or(0);
-            let n = s.doc()?.doc.page_count();
-            if page >= n {
-                return Err(bad("bookmark.add", format!("no page {}", page + 1)));
+        cmd!(
+            "bookmark.add",
+            "New Bookmark",
+            [],
+            None,
+            "{name?, anchor?: text anchor id or name | page?: 1-based; default: anchor at selected text}",
+            has_doc,
+            |s, p| {
+                let page = p.get("page").and_then(Value::as_u64).map(|v| (v as usize).saturating_sub(1)).unwrap_or(0);
+                let n = s.doc()?.doc.page_count();
+                if page >= n {
+                    return Err(bad("bookmark.add", format!("no page {}", page + 1)));
+                }
+                let name = str_param(p, "name").map(str::to_string);
+                let anchor = match dest_param("bookmark.add", &s.doc()?.doc, p)? {
+                    Some(HyperlinkDest::Anchor(a)) => Some(a),
+                    _ => None,
+                };
+                s.edit(|d, sel| {
+                    let name = name
+                        .clone()
+                        .or_else(|| anchor.and_then(|a| d.anchor(a).map(|a| a.name.clone())))
+                        .unwrap_or_else(|| format!("Bookmark {}", d.bookmarks.len() + 1));
+                    let anchor = if anchor.is_some() || p.get("page").is_some() {
+                        anchor
+                    } else {
+                        let t = sel.text.filter(|t| t.cell.is_none()).ok_or_else(|| bad("bookmark.add", "select story text or give an anchor"))?;
+                        let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+                        let at = t.range().start.min(st.len());
+                        let existing = st.anchors.iter().find(|a| st.anchor_pos(a.id) == Some(at)).map(|a| a.id);
+                        let id = if let Some(id) = existing {
+                            id
+                        } else {
+                            let id = st.insert_anchor(at, &name);
+                            let shift = designcraft_doc::ANCHOR_MARK.len_utf8();
+                            d.adjust_text_ranges(t.story, at..at, shift);
+                            let start = if t.is_caret() { at.saturating_add(shift) } else { at };
+                            sel.text = Some(designcraft_doc::TextSel { anchor: start, focus: t.range().end.saturating_add(shift), ..t });
+                            id
+                        };
+                        Some(id)
+                    };
+                    if let Some((sid, pos)) = anchor.and_then(|a| d.find_anchor(a))
+                        && let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell.is_none() && !t.is_caret())
+                        && t.range().start == pos.saturating_add(designcraft_doc::ANCHOR_MARK.len_utf8())
+                    {
+                        if t.anchor < t.focus {
+                            t.anchor = pos;
+                        } else {
+                            t.focus = pos;
+                        }
+                    }
+                    d.bookmarks.push(Bookmark { name, anchor, page, children: vec![], generated_by_toc: false });
+                    Ok(json!({"index": d.bookmarks.len() - 1}))
+                })
             }
-            let name = str_param(p, "name").map(str::to_string);
-            s.edit(|d, _| {
-                let name = name.clone().unwrap_or_else(|| format!("Bookmark {}", d.bookmarks.len() + 1));
-                d.bookmarks.push(Bookmark { name, page, children: vec![], generated_by_toc: false });
-                Ok(json!({"index": d.bookmarks.len() - 1}))
-            })
-        }),
+        ),
         cmd!("bookmark.delete", "Delete Bookmark", [], None, "{index}", has_doc, |s, p| {
             let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad("bookmark.delete", "missing index"))? as usize;
             s.edit(|d, _| {
@@ -87,7 +131,16 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(Value::Null)
             })
         }),
-        cmd!(query "bookmark.list", "Bookmarks", [], None, "{}", has_doc, |s, _| Ok(serde_json::to_value(&s.doc()?.doc.bookmarks).unwrap_or_default())),
+        cmd!(query "bookmark.list", "Bookmarks", [], None, "{} — pages are resolved from current text layout; null means unresolved", has_doc, |s, _| {
+            let d = s.doc()?.doc.clone();
+            let index = s.cache.xref_index(&d);
+            fn resolved(b: &Bookmark, index: &designcraft_compose::xref::XrefIndex) -> Value {
+                let page = match b.anchor { Some(a) => index.page_index(a), None => Some(b.page) };
+                json!({"name": b.name, "anchor": b.anchor, "page": page, "generatedByToc": b.generated_by_toc,
+                    "children": b.children.iter().map(|c| resolved(c, index)).collect::<Vec<_>>()})
+            }
+            Ok(Value::Array(d.bookmarks.iter().map(|b| resolved(b, &index)).collect()))
+        }),
     ]
 }
 
@@ -218,6 +271,99 @@ mod anchor_dest_tests {
     use serde_json::json;
 
     use crate::Session;
+
+    fn outline_pages(s: &mut Session) -> Vec<usize> {
+        let r = s.execute("file.exportPdf", &json!({})).unwrap();
+        let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
+        let pdf = String::from_utf8_lossy(&bytes);
+        let kids: Vec<_> =
+            pdf.split("/Kids[").nth(1).unwrap().split(']').next().unwrap().split(" 0 R").map(str::trim).filter(|s| !s.is_empty()).collect();
+        pdf.split("/Title")
+            .skip(1)
+            .filter_map(|part| {
+                let dest = part.split("/Dest ").nth(1)?.split(" 0 R").next()?.trim();
+                let object = pdf.split(&format!("\n{dest} 0 obj\n")).nth(1)?.split("\nendobj").next()?;
+                let page = object.trim_start_matches('[').split(" 0 R").next()?.trim();
+                kids.iter().position(|k| *k == page)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn text_bookmark_follows_reflow_in_panel_and_pdf() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 300, "pages": 2, "facingPages": false, "margins": 0})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [20,20,280,65], "content": "text", "text": "Chapter"})).unwrap();
+        let spread = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+        let b = s.execute("frame.create", &json!({"spread": spread, "rect": [20,20,280,280], "content": "text"})).unwrap();
+        s.execute("text.thread", &json!({"from": a["id"], "to": b["id"]})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 7})).unwrap();
+        s.execute("bookmark.add", &json!({"name": "Chapter"})).unwrap();
+        let anchor = s.execute("bookmark.list", &json!({})).unwrap()[0]["anchor"].clone();
+        assert!(anchor.is_u64());
+        assert_eq!(s.execute("bookmark.list", &json!({})).unwrap()[0]["page"], 0);
+        assert_eq!(outline_pages(&mut s), vec![0]);
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("text.insert", &json!({"text": "Before\nBefore\nBefore\nBefore\n"})).unwrap();
+        assert_eq!(s.execute("bookmark.list", &json!({})).unwrap()[0]["page"], 1);
+        assert_eq!(outline_pages(&mut s), vec![1]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(outline_pages(&mut s), vec![0]);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(outline_pages(&mut s), vec![1]);
+        let d = &s.doc().unwrap().doc;
+        let bytes = designcraft_format::save(d).unwrap();
+        let back = designcraft_format::load(&bytes).unwrap();
+        assert_eq!(back.bookmarks[0].anchor, anchor.as_u64());
+        assert!(s.execute("anchor.delete", &json!({"id": anchor})).is_err());
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 1000})).unwrap();
+        s.execute("text.delete", &json!({})).unwrap();
+        assert!(s.execute("bookmark.list", &json!({})).unwrap()[0]["page"].is_null());
+        assert!(outline_pages(&mut s).is_empty());
+    }
+
+    #[test]
+    fn bookmark_can_use_an_existing_anchor_and_old_page_bookmarks_still_load() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [36,36,300,200], "content": "text", "text": "Heading"})).unwrap();
+        s.execute("text.select", &json!({"story": f["story"], "anchor": 0})).unwrap();
+        let a = s.execute("anchor.create", &json!({"name": "Heading"})).unwrap()["id"].clone();
+        s.execute("bookmark.add", &json!({"anchor": "Heading"})).unwrap();
+        let bookmarks = s.execute("bookmark.list", &json!({})).unwrap();
+        assert_eq!(bookmarks[0]["anchor"], a);
+        assert_eq!(bookmarks[0]["name"], "Heading");
+        assert!(s.execute("bookmark.add", &json!({"anchor": "Missing"})).is_err());
+        let old: designcraft_doc::Bookmark = serde_json::from_value(json!({"name": "Old", "page": 0})).unwrap();
+        assert_eq!(old.anchor, None);
+    }
+
+    #[test]
+    fn bookmark_follows_cut_text_but_copy_keeps_the_original_destination() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [36,36,300,200], "content": "text", "text": "Heading"})).unwrap();
+        let spread = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+        let b = s.execute("frame.create", &json!({"spread": spread, "rect": [36,36,300,200], "content": "text"})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 7})).unwrap();
+        s.execute("bookmark.add", &json!({"name": "Heading"})).unwrap();
+        let anchor = s.execute("bookmark.list", &json!({})).unwrap()[0]["anchor"].clone();
+        s.execute("edit.cut", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": b["story"], "anchor": 0})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(s.execute("bookmark.list", &json!({})).unwrap()[0]["page"], 1);
+        assert_eq!(outline_pages(&mut s), vec![1]);
+        let len = s.doc().unwrap().doc.story(designcraft_doc::StoryId(b["story"].as_u64().unwrap())).unwrap().len();
+        s.execute("text.select", &json!({"story": b["story"], "anchor": 0, "focus": len})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(s.execute("bookmark.list", &json!({})).unwrap()[0]["anchor"], anchor);
+        assert_eq!(outline_pages(&mut s), vec![1]);
+        let anchors = s.execute("anchor.list", &json!({})).unwrap();
+        assert_eq!(anchors.as_array().unwrap().len(), 2);
+        assert_ne!(anchors[0]["id"], anchors[1]["id"]);
+    }
 
     /// The page object numbers of a PDF, in order, and the page each link annotation points at
     /// (as an index into that list).

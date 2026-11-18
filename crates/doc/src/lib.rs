@@ -1064,6 +1064,8 @@ pub struct Toc {
 #[serde(rename_all = "camelCase")]
 pub struct Bookmark {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<u64>,
     /// Absolute page index.
     pub page: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

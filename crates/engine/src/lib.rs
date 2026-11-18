@@ -426,6 +426,7 @@ pub struct Session {
     /// it needs from its document: a copy holding only the stories its anchored text frames show
     /// (and theirs) and the graphics the text and those stories place.
     pub text_clipboard: Option<(Arc<designcraft_doc::Story>, String, Arc<designcraft_doc::Document>)>,
+    pub(crate) cut_text_document: Option<u64>,
     /// Requests for the UI (dialogs, view changes) produced by tools/commands.
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor.
@@ -492,6 +493,7 @@ impl Session {
             recovery_dir: None,
             recovery_owner: recovery::Owner::new(),
             text_clipboard: None,
+            cut_text_document: None,
             link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,

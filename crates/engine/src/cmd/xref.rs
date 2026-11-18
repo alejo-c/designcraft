@@ -34,7 +34,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Text Anchor",
             [],
             None,
-            "{id} — refuses anchors used by hyperlinks or cross-references",
+            "{id} — refuses anchors used by bookmarks, hyperlinks or cross-references",
             has_doc,
             delete_anchor
         ),
@@ -167,8 +167,9 @@ fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, sel| {
         if d.hyperlinks.iter().any(|h| h.dest == designcraft_doc::HyperlinkDest::Anchor(id))
             || d.stories.values().any(|st| st.xrefs.iter().any(|x| x.target == id))
+            || bookmark_uses(&d.bookmarks, id)
         {
-            return Err(bad("anchor.delete", "remove hyperlinks and cross-references to this text anchor first"));
+            return Err(bad("anchor.delete", "remove bookmarks, hyperlinks and cross-references to this text anchor first"));
         }
         let (sid, pos) = d.find_anchor(id).ok_or_else(|| bad("anchor.delete", "no such text anchor"))?;
         let end = pos.saturating_add(designcraft_doc::ANCHOR_MARK.len_utf8());
@@ -181,6 +182,17 @@ fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(Value::Null)
     })
+}
+
+fn bookmark_uses(bookmarks: &[designcraft_doc::Bookmark], id: u64) -> bool {
+    let mut pending: Vec<_> = bookmarks.iter().collect();
+    while let Some(b) = pending.pop() {
+        if b.anchor == Some(id) {
+            return true;
+        }
+        pending.extend(&b.children);
+    }
+    false
 }
 
 fn list(s: &mut Session, _: &Value) -> Result<Value> {
