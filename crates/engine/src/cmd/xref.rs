@@ -28,6 +28,16 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(query "xref.list", "Cross-References", [], None, "{} → [{story, pos, target, format, text}]", has_doc, list),
         cmd!(query "anchor.list", "Text Anchors", [], None, "{} → [{id, name, story, pos, page}]", has_doc, list_anchors),
+        cmd!("anchor.rename", "Rename Text Anchor", [], None, "{id, name}", has_doc, rename_anchor),
+        cmd!(
+            "anchor.delete",
+            "Delete Text Anchor",
+            [],
+            None,
+            "{id} — refuses anchors used by hyperlinks or cross-references",
+            has_doc,
+            delete_anchor
+        ),
         cmd!(query "xref.formats", "Cross-Reference Formats", [], None, "{} → [{name, definition}]", has_doc, |s, _| {
             Ok(serde_json::to_value(&s.doc()?.doc.xref_formats).unwrap_or_default())
         }),
@@ -130,9 +140,46 @@ fn create_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         if t.cell.is_none() {
             d.adjust_text_ranges(t.story, at..at, designcraft_doc::ANCHOR_MARK.len_utf8());
         }
-        let pos = t.focus + designcraft_doc::ANCHOR_MARK.len_utf8();
-        sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+        let shift = designcraft_doc::ANCHOR_MARK.len_utf8();
+        sel.text = Some(TextSel { anchor: t.anchor.saturating_add(shift), focus: t.focus.saturating_add(shift), ..t });
         Ok(json!({"id": id}))
+    })
+}
+
+fn rename_anchor(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("anchor.rename", "missing id"))?;
+    let name = str_param(p, "name").filter(|n| !n.trim().is_empty()).ok_or_else(|| bad("anchor.rename", "missing name"))?;
+    s.edit(|d, _| {
+        if d.stories.values().any(|st| st.anchors.iter().any(|a| a.id != id && a.name == name)) {
+            return Err(bad("anchor.rename", "a text anchor already has that name"));
+        }
+        let (sid, _) = d.find_anchor(id).ok_or_else(|| bad("anchor.rename", "no such text anchor"))?;
+        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+        let a = st.anchors.iter_mut().find(|a| a.id == id).ok_or_else(|| bad("anchor.rename", "no such text anchor"))?;
+        std::sync::Arc::make_mut(a).name = name.to_string();
+        st.rev = st.rev.wrapping_add(1);
+        Ok(Value::Null)
+    })
+}
+
+fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("anchor.delete", "missing id"))?;
+    s.edit(|d, sel| {
+        if d.hyperlinks.iter().any(|h| h.dest == designcraft_doc::HyperlinkDest::Anchor(id))
+            || d.stories.values().any(|st| st.xrefs.iter().any(|x| x.target == id))
+        {
+            return Err(bad("anchor.delete", "remove hyperlinks and cross-references to this text anchor first"));
+        }
+        let (sid, pos) = d.find_anchor(id).ok_or_else(|| bad("anchor.delete", "no such text anchor"))?;
+        let end = pos.saturating_add(designcraft_doc::ANCHOR_MARK.len_utf8());
+        d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.delete(pos..end);
+        d.adjust_text_ranges(sid, pos..end, 0);
+        if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell.is_none()) {
+            let repair = |at: usize| if at > pos { at.saturating_sub(end - pos).max(pos) } else { at };
+            t.anchor = repair(t.anchor);
+            t.focus = repair(t.focus);
+        }
+        Ok(Value::Null)
     })
 }
 
@@ -195,6 +242,30 @@ fn set_format(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manage_text_anchors_preserves_selected_text_and_references() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [36,36,300,200], "content": "text", "text": "Résumé"})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": "Résumé".len(), "focus": 0})).unwrap();
+        let id = s.execute("anchor.create", &json!({"name": "Heading"})).unwrap()["id"].clone();
+        let st = s.doc().unwrap().doc.story(sid).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(&st.text[t.range()], "Résumé");
+        assert!(st.objects.is_empty());
+        s.execute("anchor.rename", &json!({"id": id, "name": "Introduction"})).unwrap();
+        assert_eq!(s.execute("anchor.list", &json!({})).unwrap()[0]["name"], "Introduction");
+        s.execute("hyperlink.create", &json!({"anchor": id})).unwrap();
+        assert!(s.execute("anchor.delete", &json!({"id": id})).is_err());
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("anchor.delete", &json!({"id": id})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "Résumé");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.execute("anchor.list", &json!({})).unwrap()[0]["id"], id);
+        assert!(s.execute("anchor.rename", &json!({"id": id, "name": " "})).is_err());
+    }
 
     #[test]
     fn cross_reference_follows_its_destination() {

@@ -590,6 +590,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.panel|Bookmarks|{\"panel\": \"bookmarks\"}",
             "ui:window.panel|Buttons and Forms|{\"panel\": \"buttons\"}",
             "ui:window.panel|Hyperlinks|{\"panel\": \"hyperlinks\"}",
+            "ui:window.panel|Text Anchors|{\"panel\": \"textAnchors\"}",
             "ui:window.panel|Liquid Layout|{\"panel\": \"liquid\"}",
             "ui:window.panel|Media|{\"panel\": \"media\"}",
             "ui:window.panel|Object States|{\"panel\": \"states\"}",
