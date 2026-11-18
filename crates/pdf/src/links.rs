@@ -251,12 +251,16 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
 }
 
 /// The document outline from the bookmarks (bookmarks to pages that weren't exported are skipped).
-pub(crate) fn outline(doc: &Document, sheets: &[Sheet]) -> Option<Outline> {
-    fn node(doc: &Document, sheets: &[Sheet], b: &Bookmark) -> Option<OutlineNode> {
-        let i = sheet_of_page(doc, sheets, b.page)?;
+pub(crate) fn outline(doc: &Document, sheets: &[Sheet], cache: &designcraft_compose::Cache) -> Option<Outline> {
+    fn node(doc: &Document, sheets: &[Sheet], b: &Bookmark, index: &designcraft_compose::xref::XrefIndex) -> Option<OutlineNode> {
+        let page = match b.anchor {
+            Some(a) => index.page_index(a)?,
+            None => b.page,
+        };
+        let i = sheet_of_page(doc, sheets, page)?;
         let mut n = OutlineNode::new(b.name.clone(), XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)));
         for c in &b.children {
-            if let Some(cn) = node(doc, sheets, c) {
+            if let Some(cn) = node(doc, sheets, c, index) {
                 n.push_child(cn);
             }
         }
@@ -266,8 +270,9 @@ pub(crate) fn outline(doc: &Document, sheets: &[Sheet]) -> Option<Outline> {
         return None;
     }
     let mut o = Outline::new();
+    let index = cache.xref_index(doc);
     for b in &doc.bookmarks {
-        if let Some(n) = node(doc, sheets, b) {
+        if let Some(n) = node(doc, sheets, b, &index) {
             o.push_child(n);
         }
     }

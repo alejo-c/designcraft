@@ -5,6 +5,7 @@
 - Bookmarks panel offers editable names with Save and Cancel; renames use the undoable bookmark command.
 - Find/Change confirmation closes the dialog without replacing or deleting matches; replacement buttons apply changes explicitly.
 - Find/Change exposes character and paragraph style selectors for both search criteria and replacement formatting.
+- Text anchor bookmarks follow reflow and same-document cut/paste in navigation and PDF outlines; enable Bookmark beside an anchor.
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).

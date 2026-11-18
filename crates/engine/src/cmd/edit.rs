@@ -57,6 +57,7 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
     // Anchored text frames take their stories along, and graphics their files.
     let source = text_source(&st.doc, &slice);
     s.text_clipboard = Some((Arc::new(slice), text.clone(), Arc::new(source)));
+    s.cut_text_document = None;
     Ok(Some(text))
 }
 
@@ -164,8 +165,11 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
     // Footnotes, endnotes, editorial notes, cross-references and tables cannot be pasted into cells or footnotes.
     if use_clip && let Some((slice, _, source)) = clip {
         let mut slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
+        let moving = t.cell.is_none() && s.cut_text_document == Some(s.doc()?.uid);
         return s.edit(|d, sel| {
             adopt_text(d, &mut slice, &source);
+            let anchor_ids: Vec<_> =
+                slice.anchors.iter().map(|a| if moving && d.find_anchor(a.id).is_none() { a.id } else { (d.alloc() << 24) | 1 }).collect();
             let slice_len = slice.text.len();
             let (end, r) = {
                 let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
@@ -173,6 +177,12 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                 let r = r.start.min(st.len())..r.end.min(st.len());
                 st.delete(r.clone());
                 let end = st.insert_story(r.start, &slice);
+                let first = st.text.get(..r.start).map_or(0, |text| text.matches(designcraft_doc::ANCHOR_MARK).count());
+                for (k, id) in anchor_ids.iter().enumerate() {
+                    if let Some(anchor) = st.anchors.get_mut(first + k) {
+                        Arc::make_mut(anchor).id = *id;
+                    }
+                }
                 (end, r)
             };
             if t.cell.is_none() {
@@ -447,6 +457,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{}", has_selection_or_text, |s, p| {
             if let Some(text) = copy_text(s)? {
                 super::text::delete_selection(s)?;
+                s.cut_text_document = Some(s.doc()?.uid);
                 return Ok(json!({"text": text}));
             }
             copy_items(s)?;

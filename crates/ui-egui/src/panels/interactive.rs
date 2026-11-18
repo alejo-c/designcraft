@@ -150,9 +150,11 @@ mod anchor_link_tests {
 
 pub fn bookmarks(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Bookmark for This Page"))).clicked() {
-        let page = crate::canvas::current_page(app).unwrap_or(0) + 1;
-        let _ = app.run("bookmark.add", json!({"page": page}));
+    let has_text = app.session.active().is_some_and(|d| d.selection.text.is_some_and(|t| t.cell.is_none()));
+    if ui.add_enabled(has_text, egui::Button::new(crate::i18n::tr(&app.ui.language, "New Bookmark from Selected Text"))).clicked()
+        && let Err(e) = app.run("bookmark.add", json!({}))
+    {
+        app.status_error("Bookmarks", e);
     }
     ui.separator();
     let list = app.session.execute("bookmark.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
@@ -166,14 +168,18 @@ pub fn bookmarks(app: &mut DesignApp, ui: &mut egui::Ui) {
         );
     }
     for (i, b) in list.iter().enumerate() {
-        let page = b["page"].as_u64().unwrap_or(0) as usize;
+        let page = b["page"].as_u64().and_then(|p| usize::try_from(p).ok());
         let key = egui::Id::unique(("bookmark_name", app.session.active().map(|d| d.uid), i));
         let mut draft: Option<String> = ui.data(|d| d.get_temp(key));
         ui.horizontal(|ui| {
             if ui
-                .selectable_label(false, b["name"].as_str().unwrap_or(""))
-                .on_hover_text(format!("{} {}", crate::i18n::tr(&app.ui.language, "Page"), app.session.page_label(page)))
+                .add_enabled(page.is_some(), egui::Button::selectable(false, b["name"].as_str().unwrap_or("")))
+                .on_hover_text(
+                    page.map(|p| format!("{} {}", crate::i18n::tr(&app.ui.language, "Page"), app.session.page_label(p)))
+                        .unwrap_or_else(|| "Unresolved text anchor".into()),
+                )
                 .clicked()
+                && let Some(page) = page
             {
                 crate::canvas::go_to_page(app, page);
             }
@@ -230,6 +236,8 @@ mod bookmark_name_tests {
     fn panel_renames_bookmarks_with_undo() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [36,36,300,200], "content": "text", "text": "Original"})).unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 8})).unwrap();
         app.run("bookmark.add", json!({"name": "Original"})).unwrap();
         let mut h = Harness::builder().with_size(egui::vec2(500.0, 500.0)).build_ui_state(|ui, app| bookmarks(app, ui), app);
         h.run_steps(3);
@@ -263,10 +271,22 @@ pub fn text_anchors(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.data_mut(|d| d.insert_temp(key, name));
     ui.separator();
     let list = app.session.execute("anchor.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let bookmarks = app.session.execute("bookmark.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     for a in list {
         let id = a["id"].clone();
         ui.push_id(id.to_string(), |ui| {
             ui.horizontal(|ui| {
+                let bookmark = bookmarks.iter().position(|b| b["anchor"] == id);
+                let mut checked = bookmark.is_some();
+                if ui.checkbox(&mut checked, crate::i18n::tr(&app.ui.language, "Bookmark")).changed() {
+                    let result = match bookmark {
+                        Some(index) => app.run("bookmark.delete", json!({"index": index})),
+                        None => app.run("bookmark.add", json!({"anchor": id})),
+                    };
+                    if let Err(e) = result {
+                        app.status_error("Text Anchors", e);
+                    }
+                }
                 if ui.selectable_label(false, a["name"].as_str().unwrap_or("")).clicked()
                     && app.run("text.select", json!({"story": a["story"], "anchor": a["pos"], "focus": a["pos"]})).is_ok()
                 {
@@ -321,6 +341,16 @@ mod text_anchor_panel_tests {
         assert_eq!(st.anchors[0].name, "Introduction");
         assert!(st.objects.is_empty());
         assert_eq!(st.text.replace(designcraft_doc::ANCHOR_MARK, ""), "Heading");
+        h.get_by_label("Bookmark").click();
+        h.run_steps(3);
+        let d = &h.state().session.doc().unwrap().doc;
+        assert_eq!(d.bookmarks[0].anchor, Some(d.stories.values().next().unwrap().anchors[0].id));
+        if let Some(path) = std::env::var_os("DESIGNCRAFT_ANCHOR_PANEL_SHOT") {
+            h.render().unwrap().save(path).unwrap();
+        }
+        h.get_by_label("Bookmark").click();
+        h.run_steps(3);
+        assert!(h.state().session.doc().unwrap().doc.bookmarks.is_empty());
     }
 }
 
