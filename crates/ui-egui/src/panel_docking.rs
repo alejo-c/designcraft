@@ -126,7 +126,7 @@ const ICON_GROUPS: &[&[&str]] = &[
     &["info"],
     &["attributes", "preflight", "separations"],
     &["notes", "trackChanges", "conditions"],
-    &["hyperlinks", "bookmarks"],
+    &["hyperlinks", "textAnchors", "bookmarks"],
     &["buttons", "states"],
     &["media", "transitions"],
     &["articles", "tags"],

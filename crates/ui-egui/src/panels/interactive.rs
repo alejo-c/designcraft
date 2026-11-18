@@ -105,6 +105,83 @@ pub fn bookmarks(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
+pub fn text_anchors(app: &mut DesignApp, ui: &mut egui::Ui) {
+    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select text or place the caret to create a text anchor."));
+    let key = egui::Id::unique(("text_anchor_name", app.session.active().map(|d| d.uid)));
+    let mut name: String = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
+    ui.add(egui::TextEdit::singleline(&mut name)).labelled_by(label.id);
+    let has_text = app.session.active().is_some_and(|d| d.selection.text.is_some_and(|t| t.cell.is_none()));
+    if ui.add_enabled(has_text && !name.trim().is_empty(), egui::Button::new(crate::i18n::tr(&app.ui.language, "New Text Anchor"))).clicked() {
+        match app.run("anchor.create", json!({"name": name})) {
+            Ok(_) => name.clear(),
+            Err(e) => app.status_error("Text Anchors", e),
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(key, name));
+    ui.separator();
+    let list = app.session.execute("anchor.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    for a in list {
+        let id = a["id"].clone();
+        ui.push_id(id.to_string(), |ui| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(false, a["name"].as_str().unwrap_or("")).clicked()
+                    && app.run("text.select", json!({"story": a["story"], "anchor": a["pos"], "focus": a["pos"]})).is_ok()
+                {
+                    let _ = app.run("view.fitSelection", json!({}));
+                }
+                if ui.small_button(crate::i18n::tr(&app.ui.language, "Delete")).clicked()
+                    && let Err(e) = app.run("anchor.delete", json!({"id": id}))
+                {
+                    app.status_error("Text Anchors", e);
+                }
+            });
+            let edit_key = key.with(id.to_string());
+            let mut draft: String = ui.data(|d| d.get_temp(edit_key)).unwrap_or_else(|| a["name"].as_str().unwrap_or("").to_string());
+            ui.horizontal(|ui| {
+                let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
+                ui.add(egui::TextEdit::singleline(&mut draft).desired_width(140.0)).labelled_by(label.id);
+                if ui
+                    .add_enabled(
+                        !draft.trim().is_empty() && json!(draft) != a["name"],
+                        egui::Button::new(crate::i18n::tr(&app.ui.language, "Rename")),
+                    )
+                    .clicked()
+                    && let Err(e) = app.run("anchor.rename", json!({"id": id, "name": draft}))
+                {
+                    app.status_error("Text Anchors", e);
+                }
+            });
+            ui.data_mut(|d| d.insert_temp(edit_key, draft));
+        });
+    }
+}
+
+#[cfg(test)]
+mod text_anchor_panel_tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    #[test]
+    fn panel_creates_a_text_destination_without_an_anchored_object() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [36,36,300,200], "content": "text", "text": "Heading"})).unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 7})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(500.0, 500.0)).build_ui_state(|ui, app| text_anchors(app, ui), app);
+        h.run_steps(3);
+        h.get_by_role(egui::accesskit::Role::TextInput).click();
+        h.event(egui::Event::Text("Introduction".into()));
+        h.run_steps(3);
+        h.get_by_label("New Text Anchor").click();
+        h.run_steps(3);
+        let st = h.state().session.doc().unwrap().doc.story(designcraft_doc::StoryId(f["story"].as_u64().unwrap())).unwrap();
+        assert_eq!(st.anchors[0].name, "Introduction");
+        assert!(st.objects.is_empty());
+        assert_eq!(st.text.replace(designcraft_doc::ANCHOR_MARK, ""), "Heading");
+    }
+}
+
 /// Articles panel: reading-order lists for EPUB / HTML export.
 pub fn articles(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
