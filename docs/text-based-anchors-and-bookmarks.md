@@ -45,6 +45,8 @@ Clicking a text anchor or its bookmark selects the anchor's current text positio
 
 In an exported PDF, a hyperlink to a text anchor and a bookmark anchored in text jump to the top of the anchor's composed line, at the anchor's x position, rather than to the top of the page. Page hyperlinks and page bookmarks keep their page destinations. A link or bookmark whose anchor is unresolved or on a page that was not exported is left out.
 
+PDF text anchor bookmarks sort within each sibling list by absolute page, then increasing composed caret x, then increasing composed caret y, matching the Text Anchors panel. Anchor IDs, object IDs, names and creation order do not precede these coordinates. Bookmark hierarchy and legacy page bookmark positions stay intact; export does not reorder the saved document's bookmarks.
+
 ## Reading destinations correctly
 
 - bookmark.list returns name, anchor, page, generatedByToc, and children. Its page is the current absolute page index, starting at zero, or null when an anchor cannot be resolved. Its anchor is the numeric target ID or null for a page bookmark. These destination rules also apply to returned children.

@@ -119,6 +119,7 @@ New workspace crates include `workspace = true` under `[lints]` in `Cargo.toml`.
 - Missing or overset anchor destinations must not fall back to their stored page.
 - Same-document cut/paste preserves anchor identities; copies need fresh document-unique identities.
 - Text Anchors ordering is page, then x, then y; anchors in another column must not sort by y alone.
+- PDF text anchor bookmarks follow the same composed page/x/y order within each sibling list. Preserve hierarchy and legacy page bookmark positions.
 - Panel deletion removes the anchor and linked bookmarks together with undo; hyperlinks and cross-references still protect their destination.
 
 ## Shared libraries
