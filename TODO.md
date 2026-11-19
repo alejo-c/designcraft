@@ -18,6 +18,7 @@
 
 ## Test commands
 
+- cargo test -p designcraft-pdf --lib
 - cargo test -p designcraft-engine --lib bookmark
 - cargo test -p designcraft-engine --lib anchor
 - cargo test -p designcraft-ui-egui --lib text_anchor_panel_tests

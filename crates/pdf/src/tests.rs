@@ -906,6 +906,90 @@ fn text_destinations_follow_the_composed_frame() {
     assert!((points[0].0 - expected.0).abs() < 0.1 && (points[0].1 - expected.1).abs() < 0.1, "{points:?} vs {expected:?}");
 }
 
+fn text_bookmark(d: &mut Document, page: usize, x: f64, y: f64, name: &str) -> designcraft_doc::Bookmark {
+    let (si, pi) = d.page_loc(page).unwrap();
+    let page_bounds = d.spreads[si].pages[pi].bounds();
+    let x = page_bounds.x0 + x;
+    let y = page_bounds.y0 + y;
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(si), Rect::new(x, y, x + 180.0, y + 60.0), d.default_layer(), name, ParaFormat::default()).unwrap();
+    let anchor = d.story_mut(sid).unwrap().insert_anchor(0, name);
+    designcraft_doc::Bookmark { name: name.into(), anchor: Some(anchor), page: 0, children: vec![], generated_by_toc: false }
+}
+
+fn pdf_outline_names(bytes: &[u8]) -> Vec<(usize, String)> {
+    use craft_pdf::syntax::object::{Dict, String as PdfString};
+
+    fn children(parent: &Dict<'_>, depth: usize, names: &mut Vec<(usize, String)>) {
+        let mut next = parent.get::<Dict<'_>>(b"First");
+        while let Some(node) = next {
+            let title = node.get::<PdfString<'_>>(b"Title").unwrap();
+            names.push((depth, String::from_utf8(title.as_bytes().to_vec()).unwrap()));
+            children(&node, depth + 1, names);
+            next = node.get::<Dict<'_>>(b"Next");
+        }
+    }
+
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).unwrap();
+    let catalog = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()).unwrap();
+    let outline = catalog.get::<Dict<'_>>(b"Outlines").unwrap();
+    let mut names = Vec::new();
+    children(&outline, 0, &mut names);
+    names
+}
+
+#[test]
+fn pdf_text_bookmarks_are_ordered_by_page_then_x_then_y() {
+    let mut d = Document::new(&NewDocument { pages: 4, facing_pages: true, ..NewDocument::default() });
+    for (page, x, y, name) in [
+        (3, 36.0, 36.0, "Page four"),
+        (2, 36.0, 36.0, "Page three"),
+        (1, 300.0, 36.0, "Right"),
+        (1, 36.0, 400.0, "Left lower"),
+        (1, 36.0, 36.0, "Left upper"),
+        (0, 300.0, 600.0, "Page one"),
+    ] {
+        let bookmark = text_bookmark(&mut d, page, x, y, name);
+        d.bookmarks.push(bookmark);
+    }
+    d.bookmarks.rotate_left(2);
+    let expected = ["Page one", "Left upper", "Left lower", "Right", "Page three", "Page four"];
+    for spreads in [false, true] {
+        let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { spreads, ..Default::default() }).unwrap();
+        let names = pdf_outline_names(&bytes);
+        assert_eq!(names, expected.map(|name| (0, name.to_string())), "spreads={spreads}");
+    }
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { pages: Some(vec![1, 2]), ..Default::default() }).unwrap();
+    assert_eq!(pdf_outline_names(&bytes), ["Left upper", "Left lower", "Right", "Page three"].map(|name| (0, name.to_string())));
+}
+
+#[test]
+fn pdf_text_bookmark_order_preserves_hierarchy_and_page_bookmarks() {
+    use designcraft_doc::Bookmark;
+
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..NewDocument::default() });
+    let later = text_bookmark(&mut d, 1, 36.0, 36.0, "Later parent");
+    let mut earlier = text_bookmark(&mut d, 0, 36.0, 36.0, "Earlier parent");
+    for (x, y, name) in [(300.0, 100.0, "Right child"), (36.0, 400.0, "Lower child"), (36.0, 100.0, "Upper child")] {
+        earlier.children.push(text_bookmark(&mut d, 0, x, y, name));
+    }
+    earlier.children.insert(1, Bookmark { name: "Missing".into(), anchor: Some(u64::MAX), page: 0, children: vec![], generated_by_toc: false });
+    d.bookmarks = vec![
+        Bookmark { name: "Page two".into(), anchor: None, page: 1, children: vec![], generated_by_toc: false },
+        later,
+        Bookmark { name: "Page one".into(), anchor: None, page: 0, children: vec![], generated_by_toc: true },
+        earlier,
+    ];
+    let original = d.bookmarks.clone();
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert_eq!(
+        pdf_outline_names(&bytes),
+        [(0, "Page two"), (0, "Earlier parent"), (1, "Upper child"), (1, "Lower child"), (1, "Right child"), (0, "Page one"), (0, "Later parent"),]
+            .map(|(depth, name)| (depth, name.to_string()))
+    );
+    assert_eq!(d.bookmarks, original);
+}
+
 /// A clipping path on a placed image becomes a clip in the page content, inside the frame's.
 #[test]
 fn clipping_path_clips_the_image() {

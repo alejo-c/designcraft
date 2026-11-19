@@ -5,3 +5,4 @@
 - Text Anchors gained linked-bookmark deletion, cropped names, page/x/y ordering and caret navigation with regression coverage.
 - Text Anchors: user confirmed cargo xtask ci completed without errors.
 - PDF text anchor links and anchored bookmarks target the anchor line; page destinations stay pages.
+- PDF text anchor bookmarks sort by composed page/x/y; hierarchy, legacy page positions and saved bookmark order are preserved.

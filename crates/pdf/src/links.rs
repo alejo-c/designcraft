@@ -264,6 +264,22 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
 
 /// The document outline from the bookmarks (bookmarks to pages that weren't exported are skipped).
 pub(crate) fn outline(doc: &Document, sheets: &[Sheet], cache: &designcraft_compose::Cache) -> Option<Outline> {
+    fn ordered<'a>(bookmarks: &'a [Bookmark], index: &designcraft_compose::xref::XrefIndex) -> Vec<&'a Bookmark> {
+        let mut anchors: Vec<_> = bookmarks.iter().filter(|b| b.anchor.is_some()).collect();
+        let position = |b: &Bookmark| {
+            b.anchor
+                .and_then(|a| index.place(a))
+                .map_or((usize::MAX, f64::INFINITY, f64::INFINITY), |place| (place.page, place.point.x, place.point.y))
+        };
+        anchors.sort_by(|a, b| {
+            let (ap, ax, ay) = position(a);
+            let (bp, bx, by) = position(b);
+            ap.cmp(&bp).then_with(|| ax.total_cmp(&bx)).then_with(|| ay.total_cmp(&by))
+        });
+        let mut anchors = anchors.into_iter();
+        bookmarks.iter().filter_map(|b| if b.anchor.is_some() { anchors.next() } else { Some(b) }).collect()
+    }
+
     fn node(doc: &Document, sheets: &[Sheet], index: &designcraft_compose::xref::XrefIndex, b: &Bookmark) -> Option<OutlineNode> {
         let destination = match b.anchor {
             Some(a) => anchor_destination(doc, sheets, index, a)?,
@@ -273,7 +289,7 @@ pub(crate) fn outline(doc: &Document, sheets: &[Sheet], cache: &designcraft_comp
             }
         };
         let mut n = OutlineNode::new(b.name.clone(), destination);
-        for c in &b.children {
+        for c in ordered(&b.children, index) {
             if let Some(cn) = node(doc, sheets, index, c) {
                 n.push_child(cn);
             }
@@ -285,7 +301,7 @@ pub(crate) fn outline(doc: &Document, sheets: &[Sheet], cache: &designcraft_comp
     }
     let mut o = Outline::new();
     let index = cache.xref_index(doc);
-    for b in &doc.bookmarks {
+    for b in ordered(&doc.bookmarks, &index) {
         if let Some(n) = node(doc, sheets, &index, b) {
             o.push_child(n);
         }

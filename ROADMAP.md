@@ -1,5 +1,6 @@
 # DesignCraft roadmap
 
+- ANCHOR5: PDF text anchor bookmarks sort by composed page/x/y, matching the Text Anchors panel while preserving hierarchy.
 - ANCHOR3: Text Anchors panel reserves Delete beside cropped names, removes linked bookmarks with undo, sorts by page/x/y and centers text destinations.
 - Text anchor bookmarks follow reflow and same-document cut/paste in navigation and PDF destinations; enable Bookmark beside an anchor.
 
