@@ -1,0 +1,72 @@
+# Windows x64 MSI only: builds the installer with the same script and shared actions as
+# release.yml, without the rest of the release matrix (macOS, Linux, FreeBSD, web). Run it from
+# the Actions tab to download an installer for testing. Pull requests from forks have no signing
+# secrets, so their MSI is unsigned and still installs.
+name: Windows x64 MSI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/windows-x64-msi.yml
+      - packaging/windows/**
+      - assets/app-icon/**
+
+concurrency:
+  group: windows-x64-msi-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  msi:
+    name: Build MSI (x64)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    # Signing secrets live in the release environment; pull requests run without it (unsigned).
+    environment: ${{ github.event_name != 'pull_request' && 'release' || '' }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out craft-fonts
+        # Same pin as release.yml, ci.yml and freebsd.yml.
+        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@main
+        with:
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      - uses: step-security/dtolnay-rust-toolchain@8dd607977d06adf4ed49b190381e74c17a9dd25f # v1.0.0
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: windows-x64-msi
+      - name: Install WiX
+        uses: storytold/craft-common-actions/actions/install-wix@main
+        with:
+          wix-version: 5.0.2
+      - name: Build, sign, package
+        shell: pwsh
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+        run: ./packaging/windows/package.ps1 -Arch x64
+      - name: Upload MSI
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: designcraft-windows-x64-msi
+          path: dist/release/*.msi
+          if-no-files-found: error
