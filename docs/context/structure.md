@@ -1,0 +1,50 @@
+# Project structure
+
+- apps/
+  - designcraft/, native application
+  - designcraft-cli/, headless commands and automation
+  - designcraft-web/, WASM application
+- assets/
+  - app-icon/
+  - fonts/
+  - hyphenation/
+  - icc/
+- contributors/, contributor credit inputs
+- crates/
+  - color/
+  - compose/
+  - doc/
+  - engine/
+  - epub/
+  - fonts/
+  - format/
+  - geom/
+  - idml/
+  - images/
+  - mcp/
+  - pdf/
+  - pptx/
+  - render/
+  - textimport/
+  - tools/
+  - ui-egui/
+- docs/
+  - brand/
+  - context/, detailed agent context and this structure
+  - images/
+  - user/, user documentation
+  - index.md, symbol map index
+  - interactive-panels.md, panel symbol map
+- licenses/pdf-backend/
+- nix/, Nix packaging
+- packaging/
+  - freebsd/
+  - linux/
+  - macos/
+  - web/
+  - windows/
+- xtask/src/, repository checks
+- AGENTS.md, repository contribution rules
+- ASSETS.md, asset attribution
+- Cargo.toml and Cargo.lock, workspace and dependencies
+- ROADMAP.md, repository progress log
