@@ -68,7 +68,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Change All",
             ["Edit", "Find/Change"],
             None,
-            "{find, change, grep?, caseSensitive?, wholeWord?, scope?, story?, findFormat?: {charStyle?, paraStyle?, chars?: resolved character attributes} (Find Format: only text with it all through; with an empty find, each stretch of text with it), first?: bool (change only the first match), found?: bool (Change: only the text Find Next found, while it is selected and still a match; it stays selected, and Find Next goes on after it in the same domain), attrs?: {character attributes applied to changed text}, charStyle?: a character style applied to it, paraStyle?: a paragraph style applied to its paragraphs} → {count} — attrs, charStyle and paraStyle are the Change Format: with one and an empty change, the found text stays and is only formatted; with no find, change is literal text",
+            "{find, change, grep?, caseSensitive?, wholeWord?, scope?, story?, findFormat?: {charStyle?, paraStyle?, chars?: resolved character attributes} (Find Format: only text with it all through; with an empty find, each stretch of text with it), first?: bool (change only the first match), found?: bool (Change: only the text Find Next found, while it is selected and still a match; it stays selected and is brought into view; repeating Change or Find Next advances after it in the same domain), attrs?: {character attributes applied to changed text}, charStyle?: a character style applied to it, paraStyle?: a paragraph style applied to its paragraphs} → {count} — attrs, charStyle and paraStyle are the Change Format: with one and an empty change, the found text stays and is only formatted; with no find, change is literal text",
             has_doc,
             change
         ),
@@ -402,6 +402,7 @@ pub(crate) struct FindContext {
     target: usize,
     offset: usize,
     last_match_end: Option<usize>,
+    changed: bool,
 }
 
 impl FindContext {
@@ -425,6 +426,7 @@ impl FindContext {
         }
         self.offset = old.start + new_len;
         self.last_match_end = Some(self.offset);
+        self.changed = true;
         let at = self.offset;
         if let Some(i) = self
             .order
@@ -439,6 +441,7 @@ impl FindContext {
 
     fn restart(&mut self, st: &DocState) -> Result<()> {
         self.target = 0;
+        self.changed = false;
         self.last_match_end = None;
         self.order = (0..self.targets.len()).collect();
         let caret = st.selection.text.filter(|_| st.selection.cells.is_none());
@@ -544,6 +547,7 @@ fn scope(s: &Session, p: &Value) -> Result<FindContext> {
         target: 0,
         offset: 0,
         last_match_end: None,
+        changed: false,
     };
     context.restart(st)?;
     Ok(context)
@@ -631,7 +635,14 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
     // InDesign: with a Change Format and nothing in Change to, the found text is only formatted.
     let format_only =
         str_param(p, "change").unwrap_or("").is_empty() && (char_style.is_some() || para_style.is_some() || !over.is_empty() || !cleared.is_empty());
-    let context = scope(s, p)?;
+    let mut context = scope(s, p)?;
+    if bool_or(p, "found", false) && context.changed {
+        s.find_context = Some(context);
+        if find_next(s, p)?.is_null() {
+            return Ok(json!({"count": 0}));
+        }
+        context = scope(s, p)?;
+    }
     let targets = context.targets.clone();
     // Change: only the text Find Next found, the selection, while it is still a match (as Find
     // Next defines one), with its replacement.
@@ -737,6 +748,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
     })?;
     // Change: Find Next goes on after the changed text, in the search's domain.
     if let (Some((sid, cell, old)), Some(len)) = (&found, changed) {
+        reveal_match(s)?;
         let mut context = context;
         context.after_change(s.doc()?, *sid, *cell, old, len);
         s.find_context = Some(context);
@@ -779,18 +791,67 @@ fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
         s.find_context = Some(context);
         return Ok(Value::Null);
     };
-    let frame = st.doc.story(sid).and_then(|x| x.frames.first().copied());
     let cell_json = cell.map(|c| json!({"table": c.table, "row": c.row, "col": c.col}));
     let stm = s.doc_mut()?;
-    stm.selection = Selection::text(TextSel { story: sid, anchor: a, focus: b, frame, cell });
+    stm.selection = Selection::text(TextSel { story: sid, anchor: a, focus: b, frame: None, cell });
     stm.bump_revision();
-    context.acknowledge(stm);
+    reveal_match(s)?;
+    context.changed = false;
+    context.acknowledge(s.doc()?);
     s.find_context = Some(context);
     let mut out = json!({"story": sid.0, "start": a, "end": b});
     if let Some(c) = cell_json {
         out["cell"] = c;
     }
     Ok(out)
+}
+
+fn reveal_match(s: &mut Session) -> Result<()> {
+    use designcraft_compose::{PathTextMap, caret, cell_caret, note_caret};
+    use designcraft_geom::{Point, Rect};
+
+    let st = s.doc()?;
+    let Some(t) = st.selection.text else { return Ok(()) };
+    let cs = s.cache.get(&st.doc, t.story, None);
+    let at = |pos| match t.cell {
+        Some(cell) => match cell.footnote_id() {
+            Some(id) => note_caret(&cs, id, pos),
+            None => cell_caret(&cs, cell.table, cell.row, cell.col, pos),
+        },
+        None => caret(&cs, pos),
+    };
+    let geometry = at(t.range().start);
+    let frame = geometry.and_then(|(fi, ..)| cs.frames.get(fi).map(|ft| ft.frame)).or_else(|| st.doc.story(t.story)?.frames.last().copied());
+    let Some(frame) = frame else { return Ok(()) };
+    let Some(loc) = st.doc.find(frame) else { return Ok(()) };
+    let Some(item) = st.doc.item(frame) else { return Ok(()) };
+    let bounds = if let Some((fi, x, bl, asc, desc)) = geometry {
+        let map = t.cell.is_none().then(|| PathTextMap::new(item, &cs.frames[fi])).flatten();
+        let xf = st.doc.parent_xf(&loc) * st.doc.text_xf(item);
+        let point = |x, y| {
+            let p = Point::new(x, y);
+            xf * map.as_ref().map_or(p, |map| map.to_path(p))
+        };
+        let mut bounds = Rect::from_points(point(x, bl - asc), point(x, bl + desc));
+        if let Some((end_fi, end_x, end_bl, end_asc, end_desc)) = at(t.range().end)
+            && end_fi == fi
+            && end_bl == bl
+        {
+            bounds = bounds.union(Rect::from_points(point(end_x, end_bl - end_asc), point(end_x, end_bl + end_desc)));
+        }
+        bounds
+    } else {
+        st.doc.parent_xf(&loc).transform_rect_bbox(item.bounds())
+    };
+    let spread = loc.spread;
+    let stm = s.doc_mut()?;
+    if let Some(t) = stm.selection.text.as_mut() {
+        t.frame = Some(frame);
+    }
+    stm.editing_parents = matches!(spread, designcraft_doc::SpreadRef::Parent(_));
+    s.ui_requests
+        .push(crate::UiRequest::View { params: json!({"revealRect": {"spread": spread, "rect": [bounds.x0, bounds.y0, bounds.x1, bounds.y1]}}) });
+    Ok(())
 }
 
 #[cfg(test)]

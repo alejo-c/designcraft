@@ -3651,16 +3651,23 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 };
                                 if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find Next"))).clicked() {
                                     let r = app.run("find.next", params());
+                                    d.fields.remove("_changedMatch");
                                     let msg = next_status(app, r);
                                     d.fields.insert("status".into(), json!(msg));
                                 }
                                 if ui
-                                    .add_enabled(selected, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Change"))))
+                                    .add_enabled(
+                                        selected || d.b("_changedMatch"),
+                                        egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Change"))),
+                                    )
                                     .clicked()
                                 {
                                     let msg = match app.run("find.change", found.clone()) {
-                                        Ok(v) => crate::i18n::tr(&app.ui.language, "{count} replacement(s) made")
-                                            .replace("{count}", &v["count"].to_string()),
+                                        Ok(v) => {
+                                            d.fields.insert("_changedMatch".into(), json!(v["count"].as_u64().is_some_and(|n| n > 0)));
+                                            crate::i18n::tr(&app.ui.language, "{count} replacement(s) made")
+                                                .replace("{count}", &v["count"].to_string())
+                                        }
                                         Err(e) => e,
                                     };
                                     d.fields.insert("status".into(), json!(msg));
@@ -3681,6 +3688,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                     .clicked()
                                 {
                                     let r = app.run("find.change", found.clone()).and_then(|_| app.run("find.next", params()));
+                                    d.fields.remove("_changedMatch");
                                     let msg = next_status(app, r);
                                     d.fields.insert("status".into(), json!(msg));
                                 }
@@ -3694,7 +3702,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 }
                             });
                             if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-                                ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+                                let response = ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+                                ui.ctx().accesskit_node_builder(response.id, |node| node.set_live(egui::accesskit::Live::Polite));
                             }
                         }
                     }
