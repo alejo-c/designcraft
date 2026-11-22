@@ -3473,6 +3473,28 @@ fn the_caret_blink_restarts_on_input_and_caret_changes() {
 }
 
 #[test]
+fn the_caret_stops_requesting_repaints_in_an_unfocused_window() {
+    let ctx = egui::Context::default();
+    let caret = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 7);
+    let sample = |focused, time| {
+        let mut visible = false;
+        let mut out = ctx.run_ui(egui::RawInput { focused, time: Some(time), ..Default::default() }, |ui| {
+            visible = caret::visible(ui.ctx(), caret);
+        });
+        out.textures_delta.clear();
+        let mut out = ctx.run_ui(egui::RawInput { focused, time: Some(time), ..Default::default() }, |_| {});
+        out.textures_delta.clear();
+        let scheduled = ctx.repaint_causes().iter().any(|cause| cause.file.replace('\\', "/").ends_with("canvas/caret.rs"));
+        (visible, scheduled)
+    };
+
+    assert_eq!(sample(true, 10.0), (true, true), "the active window shows and schedules the caret");
+    assert_eq!(sample(false, 10.1), (false, false), "switching away stops the caret's redraws");
+    assert_eq!(sample(false, 11.3), (false, false), "unrelated frames do not restart the caret's redraws");
+    assert_eq!(sample(true, 11.3), (true, true), "returning to the window resumes blinking");
+}
+
+#[test]
 fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
