@@ -922,3 +922,5 @@ The shared craft-installer UI preserves this revision's install options and prov
 - PDF reader infrastructure: pinned shared parsing/rasterization, transformed page-box geometry and explicit failures for known incomplete layered-PDF exports. Application ownership and parity targets are unchanged.
 
 - Format reuse: HTML data URIs and file serialization use craft-mime Base64 encoding; existing decoder policies and document budgets remain unchanged.
+
+- Caret performance: inactive windows skip blink work and caret repaint requests; foreground blink timing and input handling stay unchanged.
