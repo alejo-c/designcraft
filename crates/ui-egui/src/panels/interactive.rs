@@ -59,7 +59,9 @@ pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
                 .response
                 .labelled_by(destination_label.id);
         } else {
-            ui.add(egui::TextEdit::singleline(&mut url).desired_width(170.0)).labelled_by(destination_label.id);
+            ui.add(egui::TextEdit::singleline(&mut url).desired_width(170.0))
+                .labelled_by(destination_label.id)
+                .on_hover_text(crate::i18n::tr(&app.ui.language, "URL"));
         }
         if ui
             .add_enabled(
@@ -101,13 +103,17 @@ pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
     for h in list {
         let hid = h["id"].clone();
         ui.horizontal(|ui| {
-            let r = ui.selectable_label(false, h["name"].as_str().unwrap_or("")).on_hover_text(dest_text(&app.ui.language, &h["dest"], &anchors));
-            if r.clicked() {
-                let _ = app.run("hyperlink.goToSource", json!({"id": hid}));
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete"))).clicked() {
                     let _ = app.run("hyperlink.delete", json!({"id": hid}));
+                }
+                let name = h["name"].as_str().unwrap_or("");
+                if ui
+                    .add(egui::Button::selectable(false, name).truncate())
+                    .on_hover_text(format!("{name}\n{}", dest_text(&app.ui.language, &h["dest"], &anchors)))
+                    .clicked()
+                {
+                    let _ = app.run("hyperlink.goToSource", json!({"id": hid}));
                 }
             });
         });
@@ -184,12 +190,14 @@ pub fn bookmarks(app: &mut DesignApp, ui: &mut egui::Ui) {
                 if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Rename"))).clicked() {
                     draft = Some(b["name"].as_str().unwrap_or("").to_string());
                 }
+                let name = b["name"].as_str().unwrap_or("");
                 if ui
-                    .add_enabled(page.is_some(), egui::Button::selectable(false, b["name"].as_str().unwrap_or("")).truncate())
-                    .on_hover_text(
+                    .add_enabled(page.is_some(), egui::Button::selectable(false, name).truncate())
+                    .on_hover_text(format!(
+                        "{name}\n{}",
                         page.map(|p| format!("{} {}", crate::i18n::tr(&app.ui.language, "Page"), app.session.page_label(p)))
-                            .unwrap_or_else(|| "Unresolved text anchor".into()),
-                    )
+                            .unwrap_or_else(|| "Unresolved text anchor".into())
+                    ))
                     .clicked()
                     && let Some(page) = page
                 {
@@ -494,6 +502,50 @@ mod text_anchor_panel_tests {
         h.get_by_label("Bookmark").click();
         h.run_steps(3);
         assert!(h.state().session.doc().unwrap().doc.bookmarks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod interactive_panel_tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    #[test]
+    fn long_names_leave_delete_visible_in_bookmarks_and_hyperlinks() {
+        for is_bookmark in [true, false] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let name = "A name that is much too long to fit inside a narrow panel without hiding its action buttons";
+            let list = if is_bookmark {
+                app.run("bookmark.add", json!({"name": name, "page": 0})).unwrap();
+                "bookmark.list"
+            } else {
+                let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200]})).unwrap();
+                app.run("hyperlink.create", json!({"ids": [frame["id"]], "url": "https://example.com", "name": name})).unwrap();
+                "hyperlink.list"
+            };
+            let mut h = Harness::builder().with_size(egui::vec2(280.0, 400.0)).build_ui_state(
+                move |ui, app| {
+                    if is_bookmark {
+                        bookmarks(app, ui);
+                    } else {
+                        hyperlinks(app, ui);
+                    }
+                },
+                app,
+            );
+            h.run_steps(3);
+            let delete = h.get_by_label("Delete");
+            let name_button = h.get_by_label(name);
+            assert!(delete.rect().right() <= h.ctx.content_rect().right(), "{list}: {:?}", delete.rect());
+            assert!(name_button.rect().right() <= delete.rect().left(), "{list}: {:?}", name_button.rect());
+            assert!(
+                h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == name && text.galley.elided))
+            );
+            delete.click();
+            h.run_steps(3);
+            assert!(h.state_mut().session.execute(list, &json!({})).unwrap().as_array().unwrap().is_empty());
+        }
     }
 }
 
