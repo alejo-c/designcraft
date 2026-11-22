@@ -363,6 +363,41 @@ pub fn set_zoom(app: &mut DesignApp, z: f64) {
 }
 
 pub fn apply_view_request(app: &mut DesignApp, p: &Value) {
+    if let Some(target) = p.get("revealRect")
+        && let Ok(spread) = serde_json::from_value::<SpreadRef>(target["spread"].clone())
+        && let Ok([x0, y0, x1, y1]) = serde_json::from_value::<[f64; 4]>(target["rect"].clone())
+        && let Some(st) = app.session.active()
+        && let Some(slot) = CanvasLayout::new(&st.doc, st.editing_parents).slot(spread)
+        && let Some(rect) = app.canvas_rect
+    {
+        let centre = slot.xf * DRect::new(x0, y0, x1, y1).center();
+        let dialog = app.egui_ctx.as_ref().and_then(|ctx| {
+            ctx.memory(|m| {
+                let id = egui::Id::unique("dialog");
+                m.areas().is_visible(&egui::LayerId::new(egui::Order::Foreground, id)).then(|| m.area_rect(id)).flatten()
+            })
+        });
+        let visible = dialog
+            .filter(|r| r.intersects(rect))
+            .and_then(|r| {
+                let r = r.expand(16.0).intersect(rect);
+                [
+                    Rect::from_min_max(rect.min, egui::pos2(r.left(), rect.bottom())),
+                    Rect::from_min_max(egui::pos2(r.right(), rect.top()), rect.max),
+                    Rect::from_min_max(rect.min, egui::pos2(rect.right(), r.top())),
+                    Rect::from_min_max(egui::pos2(rect.left(), r.bottom()), rect.max),
+                ]
+                .into_iter()
+                .filter(Rect::is_positive)
+                .max_by(|a, b| a.area().total_cmp(&b.area()))
+            })
+            .unwrap_or(rect);
+        if let Some(v) = app.view_mut() {
+            let offset = Xf::new(rect, v).to_canvas(visible.center()) - v.origin;
+            v.origin = centre - offset;
+            v.fitted = true;
+        }
+    }
     if let Some(r) = p.get("showSpread").and_then(|v| serde_json::from_value::<SpreadRef>(v.clone()).ok()) {
         show_spread(app, r);
     }
