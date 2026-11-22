@@ -1,0 +1,1 @@
+cargo b -r -p designcraft --locked && cp ./target/release/designcraft ~/.local/share/cargo/bin/
