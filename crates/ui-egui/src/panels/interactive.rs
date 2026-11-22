@@ -149,71 +149,91 @@ fn go_to_anchor(app: &mut DesignApp, id: u64) {
     crate::canvas::go_to_spread_rect(app, spread, rect);
 }
 
-pub fn text_anchors(app: &mut DesignApp, ui: &mut egui::Ui) {
-    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select text or place the caret to create a text anchor."));
-    let key = egui::Id::unique(("text_anchor_name", app.session.active().map(|d| d.uid)));
-    let mut name: String = ui.data(|d| d.get_temp(key)).unwrap_or_default();
-    let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
-    ui.add(egui::TextEdit::singleline(&mut name).desired_width(ui.available_width())).labelled_by(label.id);
-    let has_text = app.session.active().is_some_and(|d| d.selection.text.is_some_and(|t| t.cell.is_none()));
-    if ui.add_enabled(has_text && !name.trim().is_empty(), egui::Button::new(crate::i18n::tr(&app.ui.language, "New Text Anchor"))).clicked() {
-        match app.run("anchor.create", json!({"name": name})) {
-            Ok(_) => name.clear(),
-            Err(e) => app.status_error("Text Anchors", e),
+fn text_anchor_target(app: &mut DesignApp) -> Option<(designcraft_doc::TextSel, String)> {
+    let st = app.session.active()?;
+    if let Some(text) = st.selection.text {
+        if text.cell.is_some() {
+            return None;
         }
+        let name = st.doc.story(text.story)?.text.get(text.range())?.to_string();
+        return Some((text, name));
     }
-    ui.data_mut(|d| d.insert_temp(key, name));
-    ui.separator();
+    let (frame, story) = st.selection.items.iter().find_map(|id| Some((*id, st.doc.item(*id)?.text_frame()?.story)))?;
+    let composed = app.session.cache.get(&st.doc, story, None);
+    let pos = composed.frames.iter().find(|ft| ft.frame == frame)?.range.start;
+    Some((designcraft_doc::TextSel { frame: Some(frame), ..designcraft_doc::TextSel::caret(story, pos) }, String::new()))
+}
+
+pub fn text_anchors(app: &mut DesignApp, ui: &mut egui::Ui) {
     let list = app.session.execute("anchor.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     let bookmarks = app.session.execute("bookmark.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-    for a in list {
-        let id = a["id"].clone();
-        ui.push_id(id.to_string(), |ui| {
-            ui.horizontal(|ui| {
-                let bookmark = bookmarks.iter().position(|b| b["anchor"] == id);
-                let mut checked = bookmark.is_some();
-                if ui.checkbox(&mut checked, crate::i18n::tr(&app.ui.language, "Bookmark")).changed() {
-                    let result = match bookmark {
-                        Some(index) => app.run("bookmark.delete", json!({"index": index})),
-                        None => app.run("bookmark.add", json!({"anchor": id})),
-                    };
-                    if let Err(e) = result {
-                        app.status_error("Text Anchors", e);
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button(crate::i18n::tr(&app.ui.language, "Delete")).clicked()
-                        && let Err(e) = app.run("anchor.delete", json!({"id": id, "removeBookmarks": true}))
-                    {
-                        app.status_error("Text Anchors", e);
-                    }
-                    let name = a["name"].as_str().unwrap_or("");
-                    if ui.add_enabled(!a["page"].is_null(), egui::Button::selectable(false, name).truncate()).on_hover_text(name).clicked()
-                        && let Some(id) = id.as_u64()
-                    {
-                        go_to_anchor(app, id);
-                    }
+    let list_height = (ui.available_height() - 24.0 - ui.spacing().item_spacing.y).max(0.0);
+    egui::ScrollArea::vertical().id_salt("text_anchors_list").max_height(list_height).min_scrolled_height(0.0).auto_shrink([false, false]).show(
+        ui,
+        |ui| {
+            for a in list {
+                let id = a["id"].clone();
+                ui.push_id(id.to_string(), |ui| {
+                    ui.horizontal(|ui| {
+                        let name = a["name"].as_str().unwrap_or("");
+                        let width = (ui.available_width() - 3.0 * (24.0 + ui.spacing().item_spacing.x)).max(0.0);
+                        if ui
+                            .add_enabled_ui(!a["page"].is_null(), |ui| ui.add_sized([width, 24.0], egui::Button::selectable(false, name).truncate()))
+                            .inner
+                            .on_hover_text(name)
+                            .clicked()
+                            && let Some(id) = id.as_u64()
+                        {
+                            go_to_anchor(app, id);
+                        }
+                        let bookmark = bookmarks.iter().position(|b| b["anchor"] == id);
+                        if crate::icons::button(ui, "panel-bookmarks", 24.0, bookmark.is_some(), crate::i18n::tr(&app.ui.language, "Bookmark"))
+                            .clicked()
+                        {
+                            let result = match bookmark {
+                                Some(index) => app.run("bookmark.delete", json!({"index": index})),
+                                None => app.run("bookmark.add", json!({"anchor": id})),
+                            };
+                            if let Err(e) = result {
+                                app.status_error("Text Anchors", e);
+                            }
+                        }
+                        if crate::icons::button(ui, "tool-pencil", 24.0, false, crate::i18n::tr(&app.ui.language, "Rename")).clicked() {
+                            app.ui.dialog = Some(crate::dialogs::Dialog::new(
+                                "textAnchor",
+                                json!({
+                                    "id": id, "name": name, "uid": app.session.active().map(|st| st.uid), "focusName": true
+                                }),
+                            ));
+                        }
+                        if crate::icons::button(ui, "trash", 24.0, false, crate::i18n::tr(&app.ui.language, "Delete")).clicked()
+                            && let Err(e) = app.run("anchor.delete", json!({"id": id, "removeBookmarks": true}))
+                        {
+                            app.status_error("Text Anchors", e);
+                        }
+                    });
                 });
-            });
-            let edit_key = key.with(id.to_string());
-            let mut draft: String = ui.data(|d| d.get_temp(edit_key)).unwrap_or_else(|| a["name"].as_str().unwrap_or("").to_string());
-            ui.horizontal(|ui| {
-                let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
-                ui.add(egui::TextEdit::singleline(&mut draft).desired_width(140.0)).labelled_by(label.id);
-                if ui
-                    .add_enabled(
-                        !draft.trim().is_empty() && json!(draft) != a["name"],
-                        egui::Button::new(crate::i18n::tr(&app.ui.language, "Rename")),
-                    )
-                    .clicked()
-                    && let Err(e) = app.run("anchor.rename", json!({"id": id, "name": draft}))
-                {
-                    app.status_error("Text Anchors", e);
-                }
-            });
-            ui.data_mut(|d| d.insert_temp(edit_key, draft));
-        });
-    }
+            }
+        },
+    );
+    let target = text_anchor_target(app);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let label = crate::i18n::tr(&app.ui.language, "New Text Anchor");
+        let add =
+            ui.add_enabled(target.is_some(), egui::Button::new("").min_size(egui::vec2(24.0, 24.0))).accessible_name(label).on_hover_text(label);
+        let t = Tokens::get(ui.ctx());
+        crate::icons::paint(ui.painter(), add.rect.shrink(4.0), "plus", if add.enabled() { t.icon } else { t.text_disabled });
+        if add.clicked()
+            && let Some((selection, name)) = target
+        {
+            app.ui.dialog = Some(crate::dialogs::Dialog::new(
+                "textAnchor",
+                json!({
+                    "name": name, "selection": selection, "uid": app.session.active().map(|st| st.uid), "focusName": true
+                }),
+            ));
+        }
+    });
 }
 
 #[cfg(test)]
@@ -329,12 +349,27 @@ mod text_anchor_panel_tests {
         app.run("file.new", json!({})).unwrap();
         let f = app.run("frame.create", json!({"rect": [36,36,300,200], "content": "text", "text": "Heading"})).unwrap();
         app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 7})).unwrap();
-        let mut h = Harness::builder().with_size(egui::vec2(500.0, 500.0)).build_ui_state(|ui, app| text_anchors(app, ui), app);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(500.0, 500.0))
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "en");
+            })
+            .build_ui_state(
+                |ui, app| {
+                    text_anchors(app, ui);
+                    crate::dialogs::show(app, ui.ctx());
+                },
+                app,
+            );
         h.run_steps(3);
-        h.get_by_role(egui::accesskit::Role::TextInput).click();
-        h.event(egui::Event::Text("Introduction".into()));
-        h.run_steps(3);
+        assert!(h.query_by_role(egui::accesskit::Role::TextInput).is_none());
         h.get_by_label("New Text Anchor").click();
+        h.run_steps(3);
+        assert_eq!(h.get_by_role(egui::accesskit::Role::TextInput).value().as_deref(), Some("Heading"));
+        assert!(h.get_by_role(egui::accesskit::Role::TextInput).is_focused());
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("Introduction".into()));
+        h.key_press(egui::Key::Enter);
         h.run_steps(3);
         let st = h.state().session.doc().unwrap().doc.story(designcraft_doc::StoryId(f["story"].as_u64().unwrap())).unwrap();
         assert_eq!(st.anchors[0].name, "Introduction");
@@ -350,6 +385,128 @@ mod text_anchor_panel_tests {
         h.get_by_label("Bookmark").click();
         h.run_steps(3);
         assert!(h.state().session.doc().unwrap().doc.bookmarks.is_empty());
+    }
+
+    #[test]
+    fn frame_selection_opens_an_empty_name_dialog_and_other_selections_disable_add() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [36,36,300,200], "content": "text", "text": "Heading"})).unwrap();
+        let shape = app.run("frame.create", json!({"rect": [36,250,300,350]})).unwrap();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(500.0, 500.0))
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "en");
+            })
+            .build_ui_state(
+                |ui, app| {
+                    text_anchors(app, ui);
+                    crate::dialogs::show(app, ui.ctx());
+                },
+                app,
+            );
+        for ids in [json!([]), json!([shape["id"]])] {
+            h.state_mut().run("selection.set", json!({"ids": ids})).unwrap();
+            h.run_steps(3);
+            assert!(h.get_by_label("New Text Anchor").accesskit_node().is_disabled());
+        }
+        h.state_mut().run("selection.set", json!({"ids": [frame["id"]]})).unwrap();
+        h.run_steps(3);
+        assert!(!h.get_by_label("New Text Anchor").accesskit_node().is_disabled());
+        h.get_by_label("New Text Anchor").focus();
+        h.run_steps(3);
+        h.key_press(egui::Key::Space);
+        h.run_steps(3);
+        assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("name"), "");
+        assert!(h.get_by_role(egui::accesskit::Role::TextInput).is_focused());
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.state().ui.dialog.is_none());
+        assert!(h.state().session.doc().unwrap().doc.stories.values().all(|story| story.anchors.is_empty()));
+        h.get_by_label("New Text Anchor").click();
+        h.run_steps(3);
+        h.event(egui::Event::Text("123".into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let doc = &h.state().session.doc().unwrap().doc;
+        let story = doc.story(designcraft_doc::StoryId(frame["story"].as_u64().unwrap())).unwrap();
+        assert_eq!(story.anchors[0].name, "123");
+        assert_eq!(doc.find_anchor(story.anchors[0].id).unwrap().1, 0);
+    }
+
+    #[test]
+    fn rename_uses_a_dialog_and_keeps_bookmark_identity() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [36,36,300,200], "content": "text", "text": "Heading"})).unwrap();
+        app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 0})).unwrap();
+        let anchor = app.run("anchor.create", json!({"name": "Heading"})).unwrap();
+        app.run("bookmark.add", json!({"anchor": anchor["id"]})).unwrap();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(500.0, 500.0))
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "en");
+            })
+            .build_ui_state(
+                |ui, app| {
+                    text_anchors(app, ui);
+                    crate::dialogs::show(app, ui.ctx());
+                },
+                app,
+            );
+        h.run_steps(3);
+        let name = h.get_by_label("Heading").rect();
+        let bookmark = h.get_by_label("Bookmark").rect();
+        let rename = h.get_by_label("Rename").rect();
+        let delete = h.get_by_label("Delete").rect();
+        assert!(name.right() <= bookmark.left() && bookmark.right() <= rename.left() && rename.right() <= delete.left());
+        assert!(name.y_range().contains(bookmark.center().y) && name.y_range().contains(rename.center().y));
+        h.get_by_label("Rename").click();
+        h.run_steps(3);
+        assert_eq!(h.get_by_role(egui::accesskit::Role::TextInput).value().as_deref(), Some("Heading"));
+        assert!(h.get_by_role(egui::accesskit::Role::TextInput).is_focused());
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("Renamed".into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(h.state().ui.dialog.is_none());
+        let doc = &h.state().session.doc().unwrap().doc;
+        assert_eq!(doc.story(designcraft_doc::StoryId(frame["story"].as_u64().unwrap())).unwrap().anchors[0].name, "Renamed");
+        assert_eq!(doc.bookmarks[0].anchor, anchor["id"].as_u64());
+    }
+
+    #[test]
+    fn add_stays_at_the_bottom_outside_the_scrolling_anchor_list() {
+        for height in [80.0, 200.0] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let frame = app.run("frame.create", json!({"rect": [36,36,300,200], "content": "text", "text": "Heading"})).unwrap();
+            app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 0})).unwrap();
+            let mut h = Harness::builder().with_size(egui::vec2(280.0, height)).build_ui_state(|ui, app| text_anchors(app, ui), app);
+            h.run_steps(3);
+            let footer = h.get_by_label("New Text Anchor").rect();
+            assert!(footer.bottom() <= height);
+            for index in 0..30 {
+                h.state_mut().run("anchor.create", json!({"name": format!("Anchor {index}")})).unwrap();
+            }
+            h.run_steps(3);
+            assert_eq!(h.get_by_label("New Text Anchor").rect(), footer);
+            let first_top = h.get_by_label("Anchor 0").rect().top();
+            let scroll = h.get_by_role(egui::accesskit::Role::ScrollBar).rect();
+            assert!(scroll.bottom() <= footer.top());
+            h.hover_at(egui::pos2(100.0, scroll.center().y));
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -120.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+                source: egui::MouseWheelSource::Unknown,
+            });
+            h.run_steps(3);
+            assert_eq!(h.get_by_label("New Text Anchor").rect(), footer);
+            assert!(h.query_by_label("Anchor 0").is_none_or(|node| node.rect().top() < first_top));
+            assert!(h.query_by_role(egui::accesskit::Role::TextInput).is_none());
+        }
     }
 }
 

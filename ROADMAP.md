@@ -907,3 +907,5 @@ The shared craft-installer UI preserves this revision's install options and prov
 - PDF reader infrastructure: pinned shared parsing/rasterization, transformed page-box geometry and explicit failures for known incomplete layered-PDF exports. Application ownership and parity targets are unchanged.
 
 - Format reuse: HTML data URIs and file serialization use craft-mime Base64 encoding; existing decoder policies and document budgets remain unchanged.
+
+- ANCHOR4: Text Anchors uses a fixed add footer, shared creation/rename name dialog and single-row navigation, bookmark, rename and delete controls.
