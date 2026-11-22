@@ -5686,6 +5686,8 @@ fn change_and_change_find_change_the_found_text() {
                 ui.data_mut(|d| d.insert_temp(key, true));
                 return;
             }
+            app.egui_ctx = Some(ui.ctx().clone());
+            app.canvas_rect = Some(ui.ctx().content_rect());
             show(app, ui.ctx());
         },
         app,
@@ -5698,6 +5700,19 @@ fn change_and_change_find_change_the_found_text() {
     h.get_by_label("Find Next").click();
     h.run_steps(3);
     assert_eq!(selected(&h), 0..3);
+    {
+        let app = h.state();
+        let st = app.session.doc().unwrap();
+        let t = st.selection.text.unwrap();
+        let cs = app.session.cache.get(&st.doc, sid, None);
+        let (_, x, bl, ..) = designcraft_compose::caret(&cs, t.anchor).unwrap();
+        let layout = designcraft_tools::CanvasLayout::new(&st.doc, false);
+        let point = layout.slots[0].xf * st.doc.text_xf(st.doc.item(t.frame.unwrap()).unwrap()) * designcraft_geom::Point::new(x, bl);
+        let screen = crate::canvas::Xf::new(app.canvas_rect.unwrap(), app.view().unwrap()).to_screen(point);
+        let dialog = h.ctx.memory(|m| m.area_rect(egui::Id::unique("dialog"))).unwrap();
+        assert!(app.canvas_rect.unwrap().contains(screen));
+        assert!(!dialog.contains(screen), "the found text is clear of the dialog");
+    }
     h.get_by_label("Change/Find").click();
     h.run_steps(3);
     assert_eq!((text(&h), selected(&h)), ("blue red | red".to_string(), 5..8));
@@ -5705,6 +5720,71 @@ fn change_and_change_find_change_the_found_text() {
     h.run_steps(3);
     assert_eq!((text(&h), selected(&h)), ("blue blue | red".to_string(), 5..9));
     assert_eq!(h.state().ui.dialog.as_ref().unwrap().fields["status"], json!("1 replacement(s) made"));
+    h.get_by_label("Change").focus();
+    h.run_steps(2);
+    h.key_press(egui::Key::Space);
+    h.run_steps(3);
+    assert_eq!((text(&h), selected(&h)), ("blue blue | blue".to_string(), 12..16));
+    assert!(h.get_by_label("Change").is_focused());
+    assert_eq!(h.get_by_label("1 replacement(s) made").accesskit_node().live(), egui::accesskit::Live::Polite);
+    h.state_mut().run("text.select", json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+    let d = h.state_mut().ui.dialog.as_mut().unwrap();
+    d.set_field("find", json!("blue"));
+    d.set_field("change", json!(""));
+    h.get_by_label("Find Next").click();
+    h.run_steps(3);
+    for _ in 0..2 {
+        h.get_by_label("Change").click();
+        h.run_steps(3);
+        assert!(selected(&h).is_empty());
+    }
+    assert_eq!(text(&h), "  | blue");
+}
+
+#[test]
+fn find_next_centres_the_match_on_its_threaded_page_and_preserves_zoom() {
+    use designcraft_doc::{ItemId, SpreadRef, StoryId};
+    use designcraft_geom::Point;
+    use designcraft_tools::CanvasLayout;
+
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 3})).unwrap();
+    let first = app.run("frame.create", json!({"rect": [36, 36, 180, 60], "content": "text", "text": "red\nred"})).unwrap();
+    let second = app.run("frame.create", json!({"spread": 1, "rect": [800, 650, 1100, 750], "content": "text"})).unwrap();
+    let (a, b) = (ItemId(first["id"].as_u64().unwrap()), ItemId(second["id"].as_u64().unwrap()));
+    let sid = StoryId(first["story"].as_u64().unwrap());
+    app.session.edit(|d, _| Ok(d.thread(a, b)?)).unwrap();
+    let doc = app.session.doc().unwrap().doc.clone();
+    let cs = app.session.cache.get(&doc, sid, None);
+    assert!(cs.frames[1].range.contains(&4), "the second match is on the later page");
+    app.run("text.select", json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+    let rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(500.0, 300.0));
+    app.canvas_rect = Some(rect);
+    for rotation in 0..4 {
+        let v = app.view_mut().unwrap();
+        v.zoom = 2.0;
+        v.rotation = rotation;
+        v.origin = Point::new(-2000.0, -2000.0);
+        app.session.reset_find_scope();
+        app.run("text.select", json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        let p = json!({"find": "red", "change": "redder", "found": true});
+        app.run("find.next", p.clone()).unwrap();
+        let first_origin = app.view().unwrap().origin;
+        app.run("find.next", p.clone()).unwrap();
+        assert_ne!(app.view().unwrap().origin, first_origin);
+        let selected = app.session.doc().unwrap().selection.text.unwrap();
+        assert_eq!(selected.frame, Some(b));
+        let layout = CanvasLayout::new(&doc, false);
+        let (_, x, bl, asc, desc) = designcraft_compose::caret(&cs, selected.range().start).unwrap();
+        let point = layout.slot(SpreadRef::Doc(1)).unwrap().xf * doc.text_xf(doc.item(b).unwrap()) * Point::new(x, bl + (desc - asc) / 2.0);
+        let screen = crate::canvas::Xf::new(rect, app.view().unwrap()).to_screen(point);
+        assert!(rect.shrink(20.0).contains(screen), "the actual text is visible: {screen:?}");
+        assert_eq!(app.view().unwrap().zoom, 2.0);
+        app.run("find.change", p).unwrap();
+        assert_eq!(app.session.doc().unwrap().selection.text.unwrap().frame, Some(b));
+        assert_eq!(app.view().unwrap().zoom, 2.0);
+        app.run("edit.undo", json!({})).unwrap();
+    }
 }
 
 /// Insert Table: the dimensions as typed, and the Table Style chosen is applied to the new

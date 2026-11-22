@@ -977,3 +977,23 @@ fn change_all_is_bounded_by_what_it_would_put_in() {
     let r = s.execute("find.change", &json!({"find": "x", "change": "yy"})).unwrap();
     assert_eq!(r["count"], 2048);
 }
+
+#[test]
+fn repeated_change_advances_past_replacements_in_the_original_selection() {
+    for replacement in ["redder", "red", ""] {
+        let (mut s, sid) = scope_session("red red | red");
+        scope_select(&mut s, sid, 0, 7);
+        let p = json!({"find": "red", "change": replacement, "scope": "selection", "found": true});
+        scope_hit(&mut s, &p, sid, 0, 3);
+        assert_eq!(s.execute("find.change", &p).unwrap()["count"], 1);
+        let first = s.doc().unwrap().selection.text.unwrap().range();
+        assert_eq!(s.execute("find.change", &p).unwrap()["count"], 1);
+        let second = s.doc().unwrap().selection.text.unwrap().range();
+        assert!(second.start > first.start);
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, format!("{replacement} {replacement} | red"));
+        let history = s.doc().unwrap().history.undo.len();
+        assert_eq!(s.execute("find.change", &p).unwrap()["count"], 0);
+        assert_eq!(s.doc().unwrap().history.undo.len(), history);
+        assert!(s.execute("find.next", &p).unwrap().is_null());
+    }
+}
