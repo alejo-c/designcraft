@@ -924,3 +924,5 @@ The shared craft-installer UI preserves this revision's install options and prov
 - Format reuse: HTML data URIs and file serialization use craft-mime Base64 encoding; existing decoder policies and document budgets remain unchanged.
 
 - Caret performance: inactive windows skip blink work and caret repaint requests; foreground blink timing and input handling stay unchanged.
+
+- ANCHOR4: Text Anchors uses a fixed add footer, shared creation/rename name dialog and single-row navigation, bookmark, rename and delete controls.

@@ -2,6 +2,7 @@
 
 - One entry per symbol: name, file:line, description, Uses:, Used by:.
 - Hyperlinks and Bookmarks panel layout and regression coverage, docs/interactive-panels.md.
+- Text anchor panel, fixed footer and name dialog, docs/text-anchor-panel.md.
 - Project directory structure, docs/context/structure.md.
 
 ## Agent documentation index

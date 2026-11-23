@@ -39,7 +39,9 @@ Check the response's ok field and use result only on success. The transport is d
 - Do not keep sending the old page parameter. Supplying page without an anchor explicitly requests a fixed page bookmark, even when text is selected. For text destinations, send anchor or use the selection shortcut and omit page.
 - bookmark.add appends a bookmark on each successful call. It is not an idempotent upsert. Before retrying after an uncertain response, query bookmark.list and check whether the intended anchor is already referenced.
 
-The Text Anchors panel's Bookmark checkbox uses bookmark.add with the existing anchor's ID. The Bookmarks panel's creation button uses the selected-text shortcut.
+The Text Anchors panel's Bookmark icon toggle uses bookmark.add with the existing anchor's ID. The Bookmarks panel's creation button uses the selected-text shortcut.
+
+The Text Anchors panel keeps its add icon in a fixed footer outside the scrolling list. It is enabled for a story-text selection or a selected text frame. The name dialog starts with the selected text, or an empty name for a selected frame. A frame destination is placed at the start of its composed text range. Each anchor has one row: destination name, bookmark toggle, rename icon and delete icon. Rename opens the same name dialog. Cancelling the dialog does not create or rename an anchor; invalid names leave it open with the command error. The dialog retains its original destination and refuses confirmation in another document.
 
 Clicking a text anchor or its bookmark selects the anchor's current text position and centers that position in the canvas while preserving zoom. Legacy page bookmarks still navigate to their page. Long names are truncated at the end to keep Delete visible.
 

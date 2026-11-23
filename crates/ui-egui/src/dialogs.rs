@@ -3270,6 +3270,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "newDocument" => crate::i18n::tr(&app.ui.language, "New Document"),
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
         "goToRow" => crate::i18n::tr(&app.ui.language, "Go to Row"),
+        "textAnchor" => crate::i18n::tr(&app.ui.language, if d.fields.contains_key("id") { "Rename Text Anchor" } else { "New Text Anchor" }),
         "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
         "insertPages" => crate::i18n::tr(&app.ui.language, "Insert Pages"),
         "insertTable" => crate::i18n::tr(&app.ui.language, "Insert Table…").trim_end_matches('…').trim_end(),
@@ -3354,7 +3355,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
             "closeDocument" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" | "parentOptions" | "insertTable"
-            | "convertTableToText" => 380.0,
+            | "convertTableToText" | "textAnchor" => 380.0,
             "insertPages" => 440.0,
             "convertTextToTable" => 420.0,
             "newDocument" => 960.0,
@@ -4186,6 +4187,18 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     STEP_AND_REPEAT => step_and_repeat_dialog(app, ui, &mut d),
                     CORNER_OPTIONS => corner_options_dialog(app, ui, &mut d),
                     TOC => toc_dialog(app, ui, &mut d),
+                    "textAnchor" => {
+                        let mut name = d.s("name");
+                        let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
+                        let response = ui.add(egui::TextEdit::singleline(&mut name).desired_width(ui.available_width())).labelled_by(label.id);
+                        if d.fields.remove("focusName").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            response.request_focus();
+                        }
+                        d.fields.insert("name".into(), json!(name));
+                        if let Some(error) = d.fields.get("status").and_then(Value::as_str) {
+                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, error));
+                        }
+                    }
                     id if id.starts_with("cmd:") => command_form(app, ui, &mut d),
                     "insertPages" => insert_pages_dialog(app, ui, &mut d),
                     "goToPage" => {
@@ -4926,6 +4939,26 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
 /// One slice of the dialogs' Apply; later slices take the ids this one doesn't.
 fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
     match d.id.as_str() {
+        "textAnchor" => {
+            let result = (|| {
+                if app.session.active().map(|st| st.uid) != d.fields.get("uid").and_then(Value::as_u64) {
+                    return Err("The active document has changed".into());
+                }
+                if let Some(id) = d.fields.get("id") {
+                    app.run("anchor.rename", json!({"id": id, "name": d.s("name")}))
+                } else {
+                    let selection = d.fields.get("selection").ok_or("No text selection")?;
+                    app.run("text.select", json!({"story": selection["story"], "anchor": selection["anchor"], "focus": selection["focus"]}))?;
+                    app.run("anchor.create", json!({"name": d.s("name")}))
+                }
+            })();
+            if let Err(error) = &result {
+                let mut d = d;
+                d.fields.insert("status".into(), json!(error));
+                app.ui.dialog = Some(d);
+            }
+            result
+        }
         "colorTheme" => {
             let result = app.run("swatch.addColorTheme", json!({"name": d.s("name"), "colors": d.fields.get("colors")}));
             if let Err(error) = &result {

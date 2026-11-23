@@ -32,9 +32,11 @@
   - brand/
   - context/, detailed agent context and this structure
   - images/
+  - map/, bookmark and symbol maps
   - user/, user documentation
   - index.md, symbol map index
   - interactive-panels.md, panel symbol map
+  - text-anchor-panel.md, text anchor panel symbol map
 - licenses/pdf-backend/
 - nix/, Nix packaging
 - packaging/
@@ -48,6 +50,7 @@
 - ASSETS.md, asset attribution
 - Cargo.toml and Cargo.lock, workspace and dependencies
 - ROADMAP.md, repository progress log
+
 .
 ├── .agents
 ├── .aws
@@ -130,8 +133,11 @@
 │   ├── pdf-layer-visibility.md
 │   ├── roadmap-fragments
 │   ├── roadmap.md
+│   ├── structure.md
 │   ├── target-app-parity.md
 │   ├── testing-variable-fonts.md
+│   ├── text-anchor-panel.md
+│   ├── text-based-anchors-and-bookmarks.md
 │   ├── typography-parity.md
 │   ├── ui-parity.md
 │   └── user
@@ -155,48 +161,3 @@
 └── xtask
     ├── Cargo.toml
     └── src
-.
-|-- apps
-|   |-- designcraft
-|   |-- designcraft-cli
-|   `-- designcraft-web
-|-- assets
-|   |-- app-icon
-|   |-- fonts
-|   |-- hyphenation
-|   `-- icc
-|-- contributors
-|-- crates
-|   |-- color
-|   |-- compose
-|   |-- doc
-|   |-- engine
-|   |-- epub
-|   |-- fonts
-|   |-- format
-|   |-- geom
-|   |-- idml
-|   |-- images
-|   |-- mcp
-|   |-- pdf
-|   |-- pptx
-|   |-- render
-|   |-- textimport
-|   |-- tools
-|   `-- ui-egui
-|-- docs
-|   |-- brand
-|   |-- context
-|   |-- images
-|   `-- user
-|-- licenses
-|   `-- pdf-backend
-|-- nix
-|-- packaging
-|   |-- freebsd
-|   |-- linux
-|   |-- macos
-|   |-- web
-|   `-- windows
-`-- xtask
-    `-- src
