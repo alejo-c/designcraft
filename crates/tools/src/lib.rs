@@ -250,6 +250,13 @@ impl ToolContext<'_> {
         self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
     }
 
+    /// Frontmost hit chain under a canvas point, from top-level down through any groups to the leaf.
+    pub fn hit_chain(&self, p: Point) -> Option<(SpreadRef, Vec<ItemId>)> {
+        let (sr, sp) = self.layout.spread_at(p)?;
+        let chain = self.doc.hit_group_chain(sr, sp, self.tol(4.0));
+        (!chain.is_empty()).then_some((sr, chain))
+    }
+
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the
     /// group, so a loaded text cursor over a text frame in a group found nothing to thread into
     /// (gaps 27); InDesign threads into it.

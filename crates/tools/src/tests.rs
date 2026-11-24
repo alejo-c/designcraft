@@ -2616,3 +2616,159 @@ fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
     let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
     assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
 }
+
+#[test]
+fn double_clicking_into_group_selects_element_and_allows_sibling_clicks_and_edits() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let a = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(20.0, 20.0, 100.0, 100.0)));
+    let b = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(140.0, 20.0, 220.0, 100.0)));
+    let (a_id, b_id) = (a.id, b.id);
+    let (tf_id, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(260.0, 20.0, 360.0, 100.0), lid, "Hello", ParaFormat::default()).unwrap();
+    let tf = std::sync::Arc::unwrap_or_clone(std::sync::Arc::make_mut(&mut d.spreads[0]).items.pop().unwrap());
+    let gid = ItemId(d.alloc());
+    let mut group = Item::new(gid, lid, Shape::Group, designcraft_geom::PathData::default());
+    group.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(a), std::sync::Arc::new(b), std::sync::Arc::new(tf)] };
+    d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+    let outside = add_rect(&mut d, Rect::new(20.0, 180.0, 100.0, 240.0));
+
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let pa = spread_pt(&l, 60.0, 60.0);
+    let pb = spread_pt(&l, 180.0, 60.0);
+    let pt = spread_pt(&l, 300.0, 60.0);
+    let pout = spread_pt(&l, 60.0, 210.0);
+    let empty = spread_pt(&l, 450.0, 350.0);
+    let mut t = create("selection");
+
+    // 1. Single-click on an element inside the group selects the whole group.
+    let sel0 = Selection::default();
+    let acts = t.pointer(&ctx(&d, &sel0, &c, &l), &PointerEvent::new(PointerKind::Down, pa.x, pa.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [gid.0], "content": false}))]);
+    t.pointer(&ctx(&d, &Selection::items(vec![gid]), &c, &l), &PointerEvent::new(PointerKind::Up, pa.x, pa.y));
+
+    // Single-clicking another element while the group itself is selected keeps the group selected.
+    let sel_g = Selection::items(vec![gid]);
+    assert!(t.pointer(&ctx(&d, &sel_g, &c, &l), &PointerEvent::new(PointerKind::Down, pb.x, pb.y)).is_empty());
+    t.pointer(&ctx(&d, &sel_g, &c, &l), &PointerEvent::new(PointerKind::Up, pb.x, pb.y));
+
+    // 2. Fast double-click on element A selects A inside the group.
+    let acts = t.pointer(&ctx(&d, &sel_g, &c, &l), &PointerEvent::new(PointerKind::Down, pa.x, pa.y).with_clicks(2));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [a_id.0], "content": false}))]);
+    t.pointer(&ctx(&d, &Selection::items(vec![a_id]), &c, &l), &PointerEvent::new(PointerKind::Up, pa.x, pa.y));
+
+    // Standalone DoubleClick (control channel) from unselected also enters the group.
+    let acts = t.pointer(&ctx(&d, &sel0, &c, &l), &PointerEvent::new(PointerKind::DoubleClick, pa.x, pa.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [a_id.0], "content": false}))]);
+    assert!(!t.busy(), "control-channel DoubleClick does not leave a drag open");
+
+    // 3. With A selected inside the group, single-clicking sibling B switches focus to B.
+    let sel_a = Selection::items(vec![a_id]);
+    let acts = t.pointer(&ctx(&d, &sel_a, &c, &l), &PointerEvent::new(PointerKind::Down, pb.x, pb.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [b_id.0], "content": false}))]);
+    // Dragging moves B directly (not the group).
+    let sel_b = Selection::items(vec![b_id]);
+    let acts = t.pointer(&ctx(&d, &sel_b, &c, &l), &PointerEvent::new(PointerKind::Drag, pb.x + 25.0, pb.y + 10.0));
+    assert_eq!(acts.first(), Some(&Action::Begin("Move".into())));
+    assert_eq!(t.pointer(&ctx(&d, &sel_b, &c, &l), &PointerEvent::new(PointerKind::Up, pb.x + 25.0, pb.y + 10.0)), vec![Action::Commit]);
+
+    // Shift-clicking sibling A adds A to the selection inside the group.
+    let shift = Mods { shift: true, ..Default::default() };
+    let acts = t.pointer(&ctx(&d, &sel_b, &c, &l), &PointerEvent::new(PointerKind::Down, pa.x, pa.y).with_mods(shift));
+    assert_eq!(acts, vec![Action::Exec("selection.toggle".into(), serde_json::json!({"id": a_id.0}))]);
+    t.pointer(&ctx(&d, &Selection::items(vec![b_id, a_id]), &c, &l), &PointerEvent::new(PointerKind::Up, pa.x, pa.y).with_mods(shift));
+
+    // 4. Grouped text frame: single-click switches to it while inside the group, then double-click enters Type tool.
+    let acts = t.pointer(&ctx(&d, &sel_b, &c, &l), &PointerEvent::new(PointerKind::Down, pt.x, pt.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [tf_id.0], "content": false}))]);
+    let sel_t = Selection::items(vec![tf_id]);
+    t.pointer(&ctx(&d, &sel_t, &c, &l), &PointerEvent::new(PointerKind::Up, pt.x, pt.y));
+    let acts = t.pointer(&ctx(&d, &sel_t, &c, &l), &PointerEvent::new(PointerKind::Down, pt.x, pt.y).with_clicks(2));
+    assert_eq!(acts.first(), Some(&Action::SwitchTool("type".into())));
+    assert!(matches!(&acts[1], Action::Exec(cmd, p) if cmd == "text.placeCaret" && p["frame"] == tf_id.0), "{acts:?}");
+
+    // Clicking the grouped text frame directly with the Type tool also places the caret in it.
+    let mut type_tool = create("type");
+    let acts = type_tool.pointer(&ctx(&d, &sel0, &c, &l), &PointerEvent::new(PointerKind::Down, pt.x, pt.y));
+    assert!(matches!(acts.as_slice(), [Action::Exec(cmd, p)] if cmd == "text.placeCaret" && p["frame"] == tf_id.0), "{acts:?}");
+
+    // 5. Pressing Escape while a child inside a group is selected steps up to the group; Escape on the group deselects.
+    assert_eq!(t.key(&ctx(&d, &sel_a, &c, &l), ToolKey::Escape, Mods::default()), vec![Action::Exec("select.container".into(), serde_json::json!({}))]);
+    assert_eq!(t.key(&ctx(&d, &sel_g, &c, &l), ToolKey::Escape, Mods::default()), vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+
+    // 6. Clicking an outside object or empty canvas exits the group; next single-click selects the group again.
+    let acts = t.pointer(&ctx(&d, &sel_a, &c, &l), &PointerEvent::new(PointerKind::Down, pout.x, pout.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [outside.0], "content": false}))]);
+    t.pointer(&ctx(&d, &Selection::items(vec![outside]), &c, &l), &PointerEvent::new(PointerKind::Up, pout.x, pout.y));
+    let acts = t.pointer(&ctx(&d, &Selection::items(vec![outside]), &c, &l), &PointerEvent::new(PointerKind::Down, pa.x, pa.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [gid.0], "content": false}))]);
+    t.pointer(&ctx(&d, &sel_g, &c, &l), &PointerEvent::new(PointerKind::Up, pa.x, pa.y));
+    let acts = t.pointer(&ctx(&d, &sel_a, &c, &l), &PointerEvent::new(PointerKind::Down, empty.x, empty.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+    t.pointer(&ctx(&d, &sel0, &c, &l), &PointerEvent::new(PointerKind::Up, empty.x, empty.y));
+
+    // 7. Direct Selection single-click directly selects the leaf element inside the group.
+    let mut direct = create("directSelection");
+    let acts = direct.pointer(&ctx(&d, &sel0, &c, &l), &PointerEvent::new(PointerKind::Down, pb.x, pb.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [b_id.0], "content": true}))]);
+}
+
+#[test]
+fn nested_groups_step_in_one_level_per_double_click() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let h1 = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(20.0, 20.0, 80.0, 80.0)));
+    let h2 = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(100.0, 20.0, 160.0, 80.0)));
+    let sib = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(200.0, 20.0, 260.0, 80.0)));
+    let (h1_id, h2_id, sib_id) = (h1.id, h2.id, sib.id);
+    let inner_id = ItemId(d.alloc());
+    let mut inner = Item::new(inner_id, lid, Shape::Group, designcraft_geom::PathData::default());
+    inner.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(h1), std::sync::Arc::new(h2)] };
+    let outer_id = ItemId(d.alloc());
+    let mut outer = Item::new(outer_id, lid, Shape::Group, designcraft_geom::PathData::default());
+    outer.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(inner), std::sync::Arc::new(sib)] };
+    d.insert_item(SpreadRef::Doc(0), outer, None).unwrap();
+
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let ph1 = spread_pt(&l, 50.0, 50.0);
+    let ph2 = spread_pt(&l, 130.0, 50.0);
+    let psib = spread_pt(&l, 230.0, 50.0);
+    let mut t = create("selection");
+
+    // Click 1 → outer group; Click 2 → inner group; Click 3 → leaf h1.
+    let acts = t.pointer(&ctx(&d, &Selection::default(), &c, &l), &PointerEvent::new(PointerKind::Down, ph1.x, ph1.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [outer_id.0], "content": false}))]);
+    let acts = t.pointer(&ctx(&d, &Selection::items(vec![outer_id]), &c, &l), &PointerEvent::new(PointerKind::Down, ph1.x, ph1.y).with_clicks(2));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [inner_id.0], "content": false}))]);
+    let acts = t.pointer(&ctx(&d, &Selection::items(vec![inner_id]), &c, &l), &PointerEvent::new(PointerKind::Down, ph1.x, ph1.y).with_clicks(3));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [h1_id.0], "content": false}))]);
+
+    // With h1 selected inside inner: single-clicking h2 selects h2; single-clicking sib (in outer) selects sib.
+    let sel_h1 = Selection::items(vec![h1_id]);
+    let acts = t.pointer(&ctx(&d, &sel_h1, &c, &l), &PointerEvent::new(PointerKind::Down, ph2.x, ph2.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [h2_id.0], "content": false}))]);
+    let acts = t.pointer(&ctx(&d, &sel_h1, &c, &l), &PointerEvent::new(PointerKind::Down, psib.x, psib.y));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [sib_id.0], "content": false}))]);
+}
+
+#[test]
+fn double_clicking_grouped_graphic_frame_selects_frame_then_content() {
+    let mut d = Document::new(&NewDocument::default());
+    let f = graphic_frame(&mut d);
+    let frame_item = std::sync::Arc::unwrap_or_clone(d.remove_item(f).unwrap());
+    let sib = Item::new(ItemId(d.alloc()), d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(260.0, 100.0, 320.0, 200.0)));
+    let gid = ItemId(d.alloc());
+    let mut group = Item::new(gid, d.default_layer(), Shape::Group, designcraft_geom::PathData::default());
+    group.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(frame_item), std::sync::Arc::new(sib)] };
+    d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let at = spread_pt(&l, 120.0, 180.0);
+    let mut t = create("selection");
+
+    // Double-click from group selection selects the graphic frame (not its content yet).
+    let acts = t.pointer(&ctx(&d, &Selection::items(vec![gid]), &c, &l), &PointerEvent::new(PointerKind::Down, at.x, at.y).with_clicks(2));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0], "content": false}))]);
+    // A subsequent double-click on the now-selected graphic frame toggles to content selection.
+    let acts = t.pointer(&ctx(&d, &Selection::items(vec![f]), &c, &l), &PointerEvent::new(PointerKind::Down, at.x, at.y).with_clicks(2));
+    assert_eq!(acts, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0], "content": true}))]);
+}

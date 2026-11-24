@@ -217,11 +217,28 @@ impl Document {
         Some(self.spread(loc.spread)?.items[loc.top()].id)
     }
 
+    /// Enclosing group ids of `id`, from outermost down to immediate parent (empty at top level).
+    pub fn ancestor_groups(&self, id: ItemId) -> Vec<ItemId> {
+        let Some(loc) = self.find(id) else { return Vec::new() };
+        let Some(sp) = self.spread(loc.spread) else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut items: &[Arc<Item>] = &sp.items;
+        for &i in &loc.path[..loc.path.len().saturating_sub(1)] {
+            let Some(it) = items.get(i) else { break };
+            if !it.is_group() {
+                break;
+            }
+            out.push(it.id);
+            items = it.children();
+        }
+        out
+    }
+
     /// Spread-space transform of the parent group chain of the item at `loc` (identity at top level).
     pub fn parent_xf(&self, loc: &ItemLoc) -> designcraft_geom::Affine {
         let mut xf = designcraft_geom::Affine::IDENTITY;
         if let Some(sp) = self.spread(loc.spread) {
-            let mut items = &sp.items;
+            let mut items: &[Arc<Item>] = &sp.items;
             for &i in &loc.path[..loc.path.len().saturating_sub(1)] {
                 let it = &items[i];
                 xf *= it.xf;
@@ -662,6 +679,60 @@ impl Document {
                 !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && item_hit(it, p, tol)
             })
             .map(|it| it.id)
+    }
+
+    /// Frontmost hit chain on spread `sr` at `p` (spread space), from the top-level item down
+    /// through any enclosing groups to the deepest hit member. Stops at non-group containers
+    /// (such as frames holding pasted-into content). Empty when nothing is hit.
+    pub fn hit_group_chain(&self, sr: SpreadRef, p: Point, tol: f64) -> Vec<ItemId> {
+        let skip_locked = matches!(sr, SpreadRef::Parent(_));
+        let Some(sp) = self.spread(sr) else { return Vec::new() };
+        let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
+        items.sort_by_key(|i| self.layer_rank(i.layer));
+        for it in items.into_iter().rev() {
+            let layer = self.layer(it.layer);
+            if it.hidden || (skip_locked && it.locked) || layer.is_some_and(|l| !l.visible || l.locked) {
+                continue;
+            }
+            let mut chain = Vec::new();
+            if self.collect_hit_chain(it, p, tol, skip_locked, 0, &mut chain) {
+                return chain;
+            }
+        }
+        Vec::new()
+    }
+
+    fn collect_hit_chain(&self, it: &Item, p: Point, tol: f64, skip_locked: bool, depth: usize, out: &mut Vec<ItemId>) -> bool {
+        if depth > MAX_PLACEMENT_DEPTH {
+            return false;
+        }
+        if !it.is_group() {
+            if item_hit(it, p, tol) {
+                out.push(it.id);
+                return true;
+            }
+            return false;
+        }
+        let det = it.xf.determinant().abs();
+        if !det.is_finite() || det < 1e-12 {
+            return false;
+        }
+        let inner = it.xf.inverse() * p;
+        let child_tol = tol / det.sqrt();
+        let children: Vec<&Arc<Item>> = it.shown_children().collect();
+        for c in children.into_iter().rev() {
+            let layer = self.layer(c.layer);
+            if c.hidden || (skip_locked && c.locked) || layer.is_some_and(|l| !l.visible || l.locked) {
+                continue;
+            }
+            let mark = out.len();
+            out.push(it.id);
+            if self.collect_hit_chain(c, inner, child_tol, skip_locked, depth + 1, out) {
+                return true;
+            }
+            out.truncate(mark);
+        }
+        false
     }
 
     /// The gap at `p` (spread space) on spread `sr`: between left and right neighbours (vertical

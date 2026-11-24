@@ -250,6 +250,47 @@ fn parent_hit_testing_respects_layers() {
 }
 
 #[test]
+fn hit_group_chain_and_ancestor_groups_follow_nesting_and_visibility() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let rect_item = |d: &mut Document, r: Rect| Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+    let back = rect_item(&mut d, Rect::new(10.0, 10.0, 100.0, 100.0));
+    let front = rect_item(&mut d, Rect::new(40.0, 40.0, 120.0, 120.0));
+    let (back_id, front_id) = (back.id, front.id);
+    // Nested inner group containing `back` and `front`.
+    let inner_id = ItemId(d.alloc());
+    let mut inner = Item::new(inner_id, lid, Shape::Group, designcraft_geom::PathData::default());
+    inner.content = Content::Group { items: vec![std::sync::Arc::new(back), std::sync::Arc::new(front)] };
+    // Frame with pasted-into content: must stop at the frame, not descend into pasted items.
+    let pasted = rect_item(&mut d, Rect::new(0.0, 0.0, 50.0, 50.0));
+    let mut container = rect_item(&mut d, Rect::new(150.0, 10.0, 220.0, 80.0));
+    container.content = Content::Group { items: vec![std::sync::Arc::new(pasted)] };
+    let container_id = container.id;
+    // Outer translated group holding `inner` and `container`.
+    let outer_id = ItemId(d.alloc());
+    let mut outer = Item::new(outer_id, lid, Shape::Group, designcraft_geom::PathData::default());
+    outer.xf = designcraft_geom::Affine::translate((20.0, 30.0));
+    outer.content = Content::Group { items: vec![std::sync::Arc::new(inner), std::sync::Arc::new(container)] };
+    d.insert_item(SpreadRef::Doc(0), outer, None).unwrap();
+
+    // Overlap point (50, 50) in outer space → (70, 80) in spread space: frontmost child wins.
+    assert_eq!(d.hit_group_chain(SpreadRef::Doc(0), designcraft_geom::Point::new(70.0, 80.0), 2.0), vec![outer_id, inner_id, front_id]);
+    // Non-overlapping part of `back`: (20, 20) in outer space → (40, 50) in spread space.
+    assert_eq!(d.hit_group_chain(SpreadRef::Doc(0), designcraft_geom::Point::new(40.0, 50.0), 2.0), vec![outer_id, inner_id, back_id]);
+    // Frame with pasted-into items stops at the frame itself.
+    assert_eq!(d.hit_group_chain(SpreadRef::Doc(0), designcraft_geom::Point::new(190.0, 60.0), 2.0), vec![outer_id, container_id]);
+    // Ancestor chains.
+    assert_eq!(d.ancestor_groups(outer_id), Vec::<ItemId>::new());
+    assert_eq!(d.ancestor_groups(inner_id), vec![outer_id]);
+    assert_eq!(d.ancestor_groups(front_id), vec![outer_id, inner_id]);
+    assert_eq!(d.ancestor_groups(container_id), vec![outer_id]);
+
+    // Hiding `front` lets the hit reach `back` underneath it.
+    d.item_mut(front_id).unwrap().hidden = true;
+    assert_eq!(d.hit_group_chain(SpreadRef::Doc(0), designcraft_geom::Point::new(70.0, 80.0), 2.0), vec![outer_id, inner_id, back_id]);
+}
+
+#[test]
 fn page_numbers_saturate_at_the_largest_start() {
     // A start number from a file or an old command: page 2 overflowed (a panic in debug builds).
     let mut d = crate::Document::new(&crate::build::NewDocument { pages: 3, facing_pages: false, ..Default::default() });

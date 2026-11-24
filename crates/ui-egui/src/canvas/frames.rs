@@ -307,6 +307,7 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
         && sel.text.is_none()
         && !direct
     {
+        draw_enclosing_groups(painter, xf, doc, layout, sel);
         if sel.items.len() > 1 {
             painter.rect_stroke(u, 0.0, Stroke::new(1.0, color), StrokeKind::Middle);
         }
@@ -338,6 +339,29 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
         }
     }
     text_rect.or(union)
+}
+
+/// Draw a subtle dashed bounding box around each immediate enclosing group of the selected
+/// member(s) so the group context stays visible while editing inside it.
+fn draw_enclosing_groups(painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout, sel: &Selection) {
+    let mut parent_groups: Vec<designcraft_doc::ItemId> = Vec::new();
+    for id in &sel.items {
+        if let Some(gid) = doc.ancestor_groups(*id).last().copied()
+            && !parent_groups.contains(&gid)
+        {
+            parent_groups.push(gid);
+        }
+    }
+    for gid in parent_groups {
+        if let (Some(git), Some((ga, _))) = (doc.item(gid), item_canvas_xf(doc, layout, gid)) {
+            let gb = xf.rect(ga.transform_rect_bbox(git.bounds()));
+            let stroke = Stroke::new(1.0, layer_color(doc, git).gamma_multiply(0.8));
+            let corners = [gb.left_top(), gb.right_top(), gb.right_bottom(), gb.left_bottom()];
+            for (c0, c1) in [(corners[0], corners[1]), (corners[1], corners[2]), (corners[2], corners[3]), (corners[3], corners[0])] {
+                dashed(painter, c0, c1, stroke, 4.0, 3.0);
+            }
+        }
+    }
 }
 
 /// How deep a selected group is walked for the text frames whose ports are drawn.

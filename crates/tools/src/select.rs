@@ -18,7 +18,7 @@
 //! A selected placed graphic shows its own bounding box: its handles resize the graphic (Shift keeps
 //! its proportions, Alt from its centre) and leave the frame as it is.
 
-use designcraft_doc::{Content, Item, ItemId, SpreadRef};
+use designcraft_doc::{Content, Document, Item, ItemId, Selection, SpreadRef};
 use designcraft_geom::{Affine, Point, Rect, Vec2};
 use serde_json::{Value, json};
 
@@ -439,6 +439,39 @@ pub fn grabber_center(cx: &ToolContext, id: ItemId) -> Option<Point> {
     (b.width() >= min && b.height() >= min && b.center().x.is_finite() && b.center().y.is_finite()).then(|| b.center())
 }
 
+/// Index in `chain` (outermost group → leaf) targeted by a single click under `selection`.
+///
+/// Direct Selection targets the deepest leaf. The Selection tool stays at the top-level group
+/// until a member of that group is selected, after which clicks target siblings at the active
+/// group level (or the deepest common enclosing group for nested groups).
+pub fn resolve_click_index(doc: &Document, selection: &Selection, chain: &[ItemId], direct: bool) -> Option<usize> {
+    if chain.is_empty() {
+        return None;
+    }
+    if direct {
+        return Some(chain.len() - 1);
+    }
+    let mut depth = 0usize;
+    for &sel_id in &selection.items {
+        let ancestors = doc.ancestor_groups(sel_id);
+        let common = ancestors.iter().zip(chain.iter()).take_while(|(a, b)| a == b).count();
+        depth = depth.max(common.min(chain.len() - 1));
+    }
+    Some(depth)
+}
+
+/// The item in `chain` targeted by a single click under `selection`.
+pub fn resolve_click_target(doc: &Document, selection: &Selection, chain: &[ItemId], direct: bool) -> Option<ItemId> {
+    resolve_click_index(doc, selection, chain, direct).map(|i| chain[i])
+}
+
+/// Hit-test `p` and resolve the item targeted by a click in this selection context.
+fn hit_target(cx: &ToolContext, p: Point, direct: bool) -> Option<(SpreadRef, ItemId)> {
+    let (sr, chain) = cx.hit_chain(p)?;
+    let id = resolve_click_target(cx.doc, cx.selection, &chain, direct)?;
+    Some((sr, id))
+}
+
 /// Content grabbers on show: the single selected frame's and the hovered frame's.
 pub fn grabbers(cx: &ToolContext, hover: Option<Point>) -> Vec<(ItemId, Point)> {
     let mut ids = Vec::new();
@@ -447,11 +480,10 @@ pub fn grabbers(cx: &ToolContext, hover: Option<Point>) -> Vec<(ItemId, Point)> 
     {
         ids.push(*one);
     }
-    if let Some((_, id)) = hover.and_then(|p| cx.hit(p)) {
-        let id = cx.doc.top_level_of(id).unwrap_or(id);
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
+    if let Some((_, id)) = hover.and_then(|p| hit_target(cx, p, false))
+        && !ids.contains(&id)
+    {
+        ids.push(id);
     }
     ids.into_iter().filter_map(|id| grabber_center(cx, id).map(|c| (id, c))).collect()
 }
@@ -467,10 +499,7 @@ pub fn grabber_at(cx: &ToolContext, p: Point) -> Option<ItemId> {
 /// hand over it.
 fn on_selected_content(cx: &ToolContext, p: Point) -> bool {
     cx.selection.content
-        && cx.hit(p).is_some_and(|(_, id)| {
-            let id = cx.doc.top_level_of(id).unwrap_or(id);
-            cx.selection.contains(id) && cx.doc.item(id).is_some_and(holds_content)
-        })
+        && hit_target(cx, p, false).is_some_and(|(_, id)| cx.selection.contains(id) && cx.doc.item(id).is_some_and(holds_content))
         && content_bounds(cx).is_some_and(|b| b.contains(p))
 }
 
@@ -842,7 +871,7 @@ impl SelectionTool {
         // InDesign Toolbox", 10:10: click outside, then pull a frame's corner).
         if self.direct
             && !ev.mods.shift
-            && let Some((_, hit)) = cx.hit(p)
+            && let Some((_, hit)) = hit_target(cx, p, true)
             && !cx.selection.contains(hit)
             && let Some((id, si, ai, None)) = anchor_at_in(cx, &[hit], p)
         {
@@ -912,9 +941,8 @@ impl SelectionTool {
             self.drag = Drag::Pending { start: p, hit: true, content: false };
             return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
         }
-        match cx.hit(p) {
+        match hit_target(cx, p, self.direct) {
             Some((sr, id)) => {
-                let id = if self.direct { id } else { cx.doc.top_level_of(id).unwrap_or(id) };
                 let mut out = vec![];
                 if ev.mods.shift {
                     if cx.selection.contains(id) {
@@ -1285,10 +1313,28 @@ impl Tool for SelectionTool {
             self.drag = Drag::None;
             return vec![Action::Exec("object.fit".into(), json!({"mode": "fitFrameToContent", "axis": fitting_axis(cx, h)}))];
         }
-        // The second press of a double click on a text frame: edit its text.
+        // Double-clicking an element inside a group (or nested group) steps one level in and
+        // selects that child element. Once a child is selected, single clicks pick its siblings
+        // and a further double-click on a text or graphic frame enters its text or content.
+        if !self.direct
+            && !ev.mods.shift
+            && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
+            && ev.click_count() >= 2
+            && let Some((_, chain)) = cx.hit_chain(p)
+            && let Some(idx) = resolve_click_index(cx.doc, cx.selection, &chain, false)
+            && idx + 1 < chain.len()
+        {
+            self.shift_release = None;
+            self.key_release = None;
+            self.anchor_release = None;
+            let child = chain[idx + 1];
+            self.drag = if ev.kind == PointerKind::Down { Drag::Pending { start: p, hit: true, content: false } } else { Drag::None };
+            return vec![Action::Exec("selection.set".into(), json!({"ids": [child.0], "content": false}))];
+        }
+        // The second (or deeper, inside a group) press of a double click on a text frame: edit its text.
         if matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
-            && ev.click_count() == 2
-            && let Some(actions) = edit_text_at(cx, p)
+            && ev.click_count() >= 2
+            && let Some(actions) = edit_text_at(cx, p, self.direct)
         {
             self.drag = Drag::None;
             return actions;
@@ -1297,8 +1343,8 @@ impl Tool for SelectionTool {
         // its content.
         if !self.direct
             && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
-            && ev.click_count() == 2
-            && let Some(id) = cx.hit(p).map(|(_, id)| cx.doc.top_level_of(id).unwrap_or(id))
+            && ev.click_count() >= 2
+            && let Some((_, id)) = hit_target(cx, p, false)
             && cx.doc.item(id).is_some_and(holds_content)
         {
             self.drag = Drag::None;
@@ -1427,7 +1473,13 @@ impl Tool for SelectionTool {
             ToolKey::Up => mv(0.0, -inc),
             ToolKey::Down => mv(0.0, inc),
             ToolKey::Delete | ToolKey::Backspace => vec![Action::Exec("edit.clear".into(), json!({}))],
-            ToolKey::Escape => vec![Action::Exec("selection.set".into(), json!({"ids": []}))],
+            ToolKey::Escape => {
+                if cx.selection.items.iter().any(|id| !cx.doc.ancestor_groups(*id).is_empty()) {
+                    vec![Action::Exec("select.container".into(), json!({}))]
+                } else {
+                    vec![Action::Exec("selection.set".into(), json!({"ids": []}))]
+                }
+            }
             _ => vec![],
         }
     }
@@ -1481,7 +1533,7 @@ impl Tool for SelectionTool {
         if self.direct {
             let over_content = matches!(self.drag, Drag::None)
                 && anchor_at(cx, p).is_none()
-                && cx.hit(p).is_some_and(|(_, id)| cx.doc.item(id).is_some_and(holds_content));
+                && hit_target(cx, p, true).is_some_and(|(_, id)| cx.doc.item(id).is_some_and(holds_content));
             return if over_content { Cursor::Hand } else { Cursor::ArrowHollow };
         }
         if let Some(l) = self.loaded.and_then(|l| l.resolve(cx.doc)) {
@@ -1541,8 +1593,8 @@ fn handle_cursor(h: usize) -> Cursor {
 }
 
 /// Switch to the Type tool with the caret at `p` when it is over a text frame.
-fn edit_text_at(cx: &ToolContext, p: Point) -> Option<Vec<Action>> {
-    let (_, id) = cx.hit(p)?;
+fn edit_text_at(cx: &ToolContext, p: Point, direct: bool) -> Option<Vec<Action>> {
+    let (_, id) = hit_target(cx, p, direct)?;
     if !cx.doc.item(id).is_some_and(|i| i.is_text_frame()) {
         return None;
     }
