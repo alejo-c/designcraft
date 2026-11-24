@@ -133,9 +133,12 @@ pub(super) fn context_menu(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Resp
 /// - On nothing: the selection stays.
 fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::ContextMenu {
     use crate::menus::ContextMenu;
-    let hit = item_at(app, p, zoom);
+    let hit = item_chain_at(app, p, zoom);
     if app.session.wants_text() {
-        let text_frame = hit.filter(|(id, _)| app.session.active().and_then(|st| st.doc.item(*id)).is_some_and(Item::is_text_frame));
+        let text_frame = hit
+            .as_ref()
+            .and_then(|(chain, sp)| chain.last().copied().map(|id| (id, *sp)))
+            .filter(|(id, _)| app.session.active().and_then(|st| st.doc.item(*id)).is_some_and(Item::is_text_frame));
         if let Some((id, sp)) = text_frame {
             // A press in the selected text keeps it for dragging; end that press without a move.
             if app.run("text.placeCaret", json!({"frame": id.0, "point": [sp.x, sp.y]})).is_ok_and(|r| r["dragging"] == json!(true)) {
@@ -144,11 +147,11 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
         }
         return ContextMenu::Text;
     }
-    let Some((id, _)) = hit else { return ContextMenu::Canvas };
+    let Some((chain, _)) = hit else { return ContextMenu::Canvas };
     let direct = app.session.tool_id() == "directSelection";
-    let Some((target, selected)) = app.session.active().map(|st| {
-        let target = if direct { id } else { st.doc.top_level_of(id).unwrap_or(id) };
-        (target, st.selection.contains(target))
+    let Some((target, selected)) = app.session.active().and_then(|st| {
+        let target = designcraft_tools::select::resolve_click_target(&st.doc, &st.selection, &chain, direct)?;
+        Some((target, st.selection.contains(target)))
     }) else {
         return ContextMenu::Canvas;
     };
@@ -156,6 +159,16 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
         let _ = app.run("selection.set", json!({"ids": [target.0], "content": direct}));
     }
     ContextMenu::Object
+}
+
+/// The frontmost item chain under canvas point `p` (outermost group → leaf) and that point in its
+/// spread, hit as the tools do.
+fn item_chain_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(Vec<designcraft_doc::ItemId>, Point)> {
+    let st = app.session.active()?;
+    let (sr, sp) = CanvasLayout::new(&st.doc, st.editing_parents).spread_at(p)?;
+    let tol = 4.0 / zoom.max(1e-6);
+    let chain = st.doc.hit_group_chain(sr, sp, tol);
+    (!chain.is_empty()).then_some((chain, sp))
 }
 
 /// The frontmost item under canvas point `p` and that point in its spread, hit as the tools do.

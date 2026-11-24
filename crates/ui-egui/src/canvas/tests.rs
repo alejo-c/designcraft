@@ -3485,3 +3485,115 @@ fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected
     h.run_steps(3);
     assert_eq!(current_page(h.state()), Some(1));
 }
+
+#[test]
+fn canvas_double_click_enters_group_switches_siblings_and_drags_without_ungrouping() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let a = app.run("frame.create", json!({"rect": [50, 50, 150, 150]})).unwrap()["id"].as_u64().unwrap();
+    let b = app.run("frame.create", json!({"rect": [200, 50, 300, 150]})).unwrap()["id"].as_u64().unwrap();
+    let g = app.run("object.group", json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let mut h = harness(app);
+    let pa = screen_of(&h, 100.0, 100.0);
+    let pb = screen_of(&h, 250.0, 100.0);
+    let empty = screen_of(&h, 450.0, 450.0);
+
+    // Single-click selects the group.
+    h.input_mut().events.push(egui::Event::PointerMoved(pa));
+    h.run_steps(1);
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: pa,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: pa,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    assert_eq!(selected(&h), [g], "first click selects the group");
+
+    // Second quick click at the same spot enters the group and selects `a`.
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: pa,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: pa,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    assert_eq!(selected(&h), [a], "double-click selects the clicked element inside the group");
+
+    // Right-clicking `a` keeps `a` selected instead of resetting to the group.
+    right_click(&mut h, pa);
+    assert_eq!(selected(&h), [a], "right-click keeps the grouped element selected");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+
+    // Single-clicking sibling `b` selects `b` inside the group.
+    h.input_mut().events.push(egui::Event::PointerMoved(pb));
+    h.run_steps(1);
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: pb,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: pb,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    assert_eq!(selected(&h), [b], "single-click switches to sibling inside the group");
+
+    // Clicking empty canvas exits the group; clicking `a` again selects the whole group.
+    h.input_mut().events.push(egui::Event::PointerMoved(empty));
+    h.run_steps(1);
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: empty,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: empty,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    assert!(selected(&h).is_empty());
+
+    h.input_mut().events.push(egui::Event::PointerMoved(pa));
+    h.run_steps(1);
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: pa,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    h.input_mut().events.push(egui::Event::PointerButton {
+        pos: pa,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    assert_eq!(selected(&h), [g], "after exiting, single-click selects the group again");
+}

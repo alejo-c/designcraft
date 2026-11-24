@@ -296,6 +296,11 @@ impl Item {
         self.bounds_under(Affine::IDENTITY).unwrap_or(Rect::ZERO)
     }
 
+    /// Geometric bounds of this item under an outer (e.g. parent group) transform.
+    pub fn bounds_in(&self, outer: Affine) -> Rect {
+        self.bounds_under(outer).unwrap_or(Rect::ZERO)
+    }
+
     /// Bounds of the outline under `outer` (then this item's own transform). A group's are its
     /// children's outlines transformed by the full transform, which a rotated group's box of its
     /// children's boxes would overstate.

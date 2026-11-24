@@ -65,7 +65,8 @@ struct BorderDrag {
 
 /// The row or column border of a table near canvas point `pos`, in an unlocked text frame.
 fn border_at(cx: &ToolContext, pos: Point) -> Option<BorderDrag> {
-    let (_, id) = cx.hit(pos)?;
+    let (_, chain) = cx.hit_chain(pos)?;
+    let id = *chain.last()?;
     let it = cx.doc.item(id)?;
     if it.locked {
         return None;
@@ -240,7 +241,8 @@ impl TypeTool {
         }
         // Text frames take the caret (locked ones too, as in InDesign); an empty frame
         // becomes one, unless it's locked: then the press draws a new text frame over it.
-        if let Some((_, id)) = cx.hit(ev.pos)
+        if let Some((_, chain)) = cx.hit_chain(ev.pos)
+            && let Some(&id) = chain.last()
             && let Some(it) = cx.doc.item(id)
             && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
             && (it.is_text_frame() || !it.locked)

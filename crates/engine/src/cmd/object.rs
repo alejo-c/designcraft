@@ -93,7 +93,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 let c = union_bounds(d, &ids).center();
                 let m = Affine::translate(c.to_vec2()) * Affine::scale_non_uniform(sx, sy) * Affine::translate(-c.to_vec2());
                 for id in &ids {
-                    scale_object(d, *id, m, (sx * sy).abs().sqrt(), strokes);
+                    let parent = d.find(*id).map_or(Affine::IDENTITY, |l| d.parent_xf(&l));
+                    scale_object(d, *id, conjugate_parent(parent, m), (sx * sy).abs().sqrt(), strokes);
                 }
                 ok()
             })
@@ -1091,9 +1092,10 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
     let mut out = Vec::new();
     let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
     for id in ids {
-        let Some(it) = src.item(*id) else { continue };
+        let Some(loc) = src.find(*id) else { continue };
+        let Some(it) = src.item_at(&loc) else { continue };
         let mut copy = it.clone();
-        copy.xf = Affine::translate(off) * copy.xf;
+        copy.xf = Affine::translate(off) * src.parent_xf(&loc) * copy.xf;
         if !renumber(dst, src, &mut copy, &mut story_map) {
             return Err(designcraft_doc::DocError::Invalid(format!("{id} nests groups or tables too deeply to copy")).into());
         }
@@ -1440,23 +1442,26 @@ fn transform_resize(s: &mut Session, p: &Value) -> Result<Value> {
     let strokes = s.prefs.scale_strokes;
     s.edit(|d, _| {
         for id in &ids {
+            let parent = d.find(*id).map_or(Affine::IDENTITY, |l| d.parent_xf(&l));
+            let local_m = conjugate_parent(parent, m);
             let it = d.item_mut(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
             if it.locked {
                 continue;
             }
             if distribute {
-                let c = it.bounds().center();
-                it.xf = Affine::translate(m * c - c) * it.xf;
+                let c = it.bounds_in(parent).center();
+                let v = linear_inverse(parent, m * c - c);
+                it.xf = Affine::translate(v) * it.xf;
             } else if scale_content {
-                scale_object(d, *id, m, (sx * sy).abs().sqrt(), strokes);
+                scale_object(d, *id, local_m, (sx * sy).abs().sqrt(), strokes);
             } else if it.flex.is_some() {
-                resize_container(it, m);
+                resize_container(it, local_m);
             } else if matches!(it.content, Content::Group { .. }) {
-                it.xf = m * it.xf;
+                it.xf = local_m * it.xf;
             } else {
                 // Resize the frame's path (in inner space); content keeps its size (InDesign's
                 // default) unless the frame auto-fits it.
-                let inner = it.xf.inverse() * m * it.xf;
+                let inner = it.xf.inverse() * local_m * it.xf;
                 bake(it, inner);
                 let r = it.inner_bounds();
                 if let Content::Graphic(g) = &mut it.content
@@ -1487,8 +1492,27 @@ fn resize_container(it: &mut Item, m: Affine) {
     }
 }
 
+/// Spread-space geometric bounds of `id` (accounting for enclosing group transforms).
+fn spread_bounds(d: &Document, id: ItemId) -> Option<Rect> {
+    let loc = d.find(id)?;
+    let it = d.item_at(&loc)?;
+    Some(it.bounds_in(d.parent_xf(&loc)))
+}
+
+/// Convert spread-space transform `m` into an item's container space (`parent⁻¹ · m · parent`).
+fn conjugate_parent(parent: Affine, m: Affine) -> Affine {
+    if parent == Affine::IDENTITY {
+        return m;
+    }
+    let det = parent.determinant().abs();
+    if !det.is_finite() || det < 1e-12 {
+        return m;
+    }
+    parent.inverse() * m * parent
+}
+
 fn union_bounds(d: &Document, ids: &[ItemId]) -> Rect {
-    ids.iter().filter_map(|i| d.item(*i)).map(Item::bounds).reduce(|a, b| a.union(b)).unwrap_or(Rect::ZERO)
+    ids.iter().filter_map(|i| spread_bounds(d, *i)).reduce(|a, b| a.union(b)).unwrap_or(Rect::ZERO)
 }
 
 /// Transform an item's geometry in its own space: the path and the gradient vectors (fill and
@@ -1699,8 +1723,10 @@ fn apply_about_ref(s: &mut Session, p: &Value, a: Affine) -> Result<Value> {
         let c = designcraft_geom::reference_point(union_bounds(d, &ids), rf);
         let m = Affine::translate(c.to_vec2()) * a * Affine::translate(-c.to_vec2());
         for id in &ids {
+            let parent = d.find(*id).map_or(Affine::IDENTITY, |l| d.parent_xf(&l));
+            let local_m = conjugate_parent(parent, m);
             if let Some(it) = d.item_mut(*id) {
-                it.xf = m * it.xf;
+                it.xf = local_m * it.xf;
             }
         }
         ok()
@@ -1826,7 +1852,15 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
         // the geometry it pads.
         let geom = union_bounds(d, &ids);
         let from = if with_stroke {
-            ids.iter().filter_map(|i| d.item(*i)).map(Item::visible_bounds).reduce(|a, b| a.union(b)).unwrap_or(geom)
+            ids.iter()
+                .filter_map(|i| {
+                    let loc = d.find(*i)?;
+                    let it = d.item_at(&loc)?;
+                    let p = d.parent_xf(&loc);
+                    Some(if p == Affine::IDENTITY { it.visible_bounds() } else { p.transform_rect_bbox(it.visible_bounds()) })
+                })
+                .reduce(|a, b| a.union(b))
+                .unwrap_or(geom)
         } else {
             geom
         };
@@ -1851,13 +1885,15 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
             * Affine::scale_non_uniform(to.width() / geom.width().max(1e-9), to.height() / geom.height().max(1e-9))
             * Affine::translate((-geom.x0, -geom.y0));
         for id in &ids {
+            let parent = d.find(*id).map_or(Affine::IDENTITY, |l| d.parent_xf(&l));
+            let local_m = conjugate_parent(parent, m);
             if let Some(it) = d.item_mut(*id) {
                 if it.flex.is_some() {
-                    resize_container(it, m);
+                    resize_container(it, local_m);
                 } else if matches!(it.content, Content::Group { .. }) {
-                    it.xf = m * it.xf;
+                    it.xf = local_m * it.xf;
                 } else {
-                    let inner = it.xf.inverse() * m * it.xf;
+                    let inner = it.xf.inverse() * local_m * it.xf;
                     bake(it, inner);
                     // A pure move carries the placed graphic along; a resize leaves it at its size.
                     let c = inner.as_coeffs();
@@ -7073,5 +7109,49 @@ mod anchored_copy_tests {
             assert_eq!(d.find_anchor(target).map(|(at, _)| at), Some(dest));
         }
         assert_reopens(&d);
+    }
+
+    #[test]
+    fn transforming_a_child_inside_a_moved_and_rotated_group_keeps_spread_geometry_exact() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [100, 100, 160, 140]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [200, 100, 260, 140]})).unwrap()["id"].as_u64().unwrap();
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        // Move and rotate the group so parent_xf is non-identity (both translation and rotation).
+        s.execute("transform.move", &json!({"ids": [g], "dx": 80, "dy": 50})).unwrap();
+        s.execute("transform.rotate", &json!({"ids": [g], "angle": 90})).unwrap();
+
+        let box_of = |s: &Session, id: u64| {
+            let d = &s.doc().unwrap().doc;
+            let loc = d.find(ItemId(id)).unwrap();
+            d.item_at(&loc).unwrap().bounds_in(d.parent_xf(&loc))
+        };
+        let b_before = box_of(&s, b);
+        let a_before = box_of(&s, a);
+
+        // Resize child `a` in spread space: right edge moves +40 pt; left/top/bottom stay put.
+        let target = designcraft_geom::Rect::new(a_before.x0, a_before.y0, a_before.x1 + 40.0, a_before.y1);
+        s.execute(
+            "transform.resize",
+            &json!({"ids": [a], "from": [a_before.x0, a_before.y0, a_before.x1, a_before.y1], "to": [target.x0, target.y0, target.x1, target.y1]}),
+        )
+        .unwrap();
+        let a_resized = box_of(&s, a);
+        assert!((a_resized.x0 - target.x0).abs() < 1e-4 && (a_resized.x1 - target.x1).abs() < 1e-4, "{a_resized:?} vs {target:?}");
+        assert!((a_resized.y0 - target.y0).abs() < 1e-4 && (a_resized.y1 - target.y1).abs() < 1e-4, "{a_resized:?} vs {target:?}");
+        assert_eq!(box_of(&s, b), b_before, "sibling stays untouched");
+
+        // Rotate child `a` by 90° about its own centre: centre stays put, width and height swap.
+        let c_before = a_resized.center();
+        s.execute("transform.rotate", &json!({"ids": [a], "angle": 90})).unwrap();
+        let a_rot = box_of(&s, a);
+        assert!((a_rot.center().x - c_before.x).abs() < 1e-4 && (a_rot.center().y - c_before.y).abs() < 1e-4, "{a_rot:?} vs {c_before:?}");
+        assert!((a_rot.width() - a_resized.height()).abs() < 1e-4 && (a_rot.height() - a_resized.width()).abs() < 1e-4, "{a_rot:?} vs {a_resized:?}");
+
+        // Alt-duplicate child `a` by (+25, +15): the copy lands right next to `a` on the spread.
+        let dup = s.execute("transform.move", &json!({"ids": [a], "dx": 25, "dy": 15, "copy": true})).unwrap()["ids"][0].as_u64().unwrap();
+        let dup_box = box_of(&s, dup);
+        assert!((dup_box.x0 - (a_rot.x0 + 25.0)).abs() < 1e-4 && (dup_box.y0 - (a_rot.y0 + 15.0)).abs() < 1e-4, "{dup_box:?} vs {a_rot:?}");
     }
 }
