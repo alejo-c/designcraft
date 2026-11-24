@@ -990,6 +990,80 @@ fn pdf_text_bookmark_order_preserves_hierarchy_and_page_bookmarks() {
     assert_eq!(d.bookmarks, original);
 }
 
+#[test]
+fn pdf_outline_exports_text_anchor_tree_for_selected_bookmarks_and_promotes_skipped_ancestors() {
+    let mut d = Document::new(&NewDocument { pages: 3, facing_pages: false, ..NewDocument::default() });
+    let mut add_anchor = |page: usize, x: f64, y: f64, name: &str, parent: Option<u64>| -> u64 {
+        let (si, pi) = d.page_loc(page).unwrap();
+        let page_bounds = d.spreads[si].pages[pi].bounds();
+        let (_, sid) = d
+            .add_text_frame(
+                SpreadRef::Doc(si),
+                Rect::new(page_bounds.x0 + x, page_bounds.y0 + y, page_bounds.x0 + x + 180.0, page_bounds.y0 + y + 60.0),
+                d.default_layer(),
+                name,
+                ParaFormat::default(),
+            )
+            .unwrap();
+        let id = d.story_mut(sid).unwrap().insert_anchor(0, name);
+        let a = d.story_mut(sid).unwrap().anchors.iter_mut().find(|a| a.id == id).unwrap();
+        std::sync::Arc::make_mut(a).parent = parent;
+        id
+    };
+
+    // Tree:
+    // Part 1 (bookmarked)
+    // ├── Chapter 1 (NOT bookmarked)
+    // │   ├── Section 1.2 (bookmarked, lower y)
+    // │   └── Section 1.1 (bookmarked, upper y)
+    // └── Chapter 2 (bookmarked)
+    //     └── Section 2.1 (bookmarked)
+    // Part 2 (NOT bookmarked)
+    // └── Appendix (bookmarked -> promoted to root)
+    let part1 = add_anchor(0, 36.0, 36.0, "Part 1", None);
+    let ch1 = add_anchor(0, 36.0, 120.0, "Chapter 1", Some(part1));
+    let sec1_2 = add_anchor(0, 36.0, 300.0, "Section 1.2", Some(ch1));
+    let sec1_1 = add_anchor(0, 36.0, 200.0, "Section 1.1", Some(ch1));
+    let ch2 = add_anchor(1, 36.0, 36.0, "Chapter 2", Some(part1));
+    let sec2_1 = add_anchor(1, 36.0, 150.0, "Section 2.1", Some(ch2));
+    let part2 = add_anchor(2, 36.0, 36.0, "Part 2", None);
+    let appendix = add_anchor(2, 36.0, 150.0, "Appendix", Some(part2));
+
+    // Stored flat in arbitrary order: PDF export derives the tree from TextAnchor::parent
+    // without mutating `d.bookmarks`.
+    for (id, name) in [
+        (appendix, "Appendix"),
+        (sec2_1, "Section 2.1"),
+        (sec1_2, "Section 1.2"),
+        (ch2, "Chapter 2"),
+        (sec1_1, "Section 1.1"),
+        (part1, "Part 1"),
+    ] {
+        d.bookmarks.push(designcraft_doc::Bookmark { name: name.into(), anchor: Some(id), page: 0, children: vec![], generated_by_toc: false });
+    }
+    let original = d.bookmarks.clone();
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert_eq!(
+        pdf_outline_names(&bytes),
+        [
+            (0, "Part 1"),
+            (1, "Section 1.1"),
+            (1, "Section 1.2"),
+            (1, "Chapter 2"),
+            (2, "Section 2.1"),
+            (0, "Appendix"),
+        ]
+        .map(|(depth, name)| (depth, name.to_string()))
+    );
+    // Partial export excluding page 0 (where Part 1 lives) promotes Part 1's exported children to root.
+    let partial = export_pdf(&d, &Cache::new(), &PdfOptions { pages: Some(vec![1, 2]), ..Default::default() }).unwrap();
+    assert_eq!(
+        pdf_outline_names(&partial),
+        [(0, "Chapter 2"), (1, "Section 2.1"), (0, "Appendix")].map(|(depth, name)| (depth, name.to_string()))
+    );
+    assert_eq!(d.bookmarks, original);
+}
+
 /// A clipping path on a placed image becomes a clip in the page content, inside the frame's.
 #[test]
 fn clipping_path_clips_the_image() {

@@ -55,12 +55,12 @@ pub fn specs() -> Vec<CommandSpec> {
             st.bump_revision();
             Ok(Value::Null)
         }),
-        cmd!("bookmark.rename", "Rename Bookmark", [], None, "{index, name}", has_doc, |s, p| {
-            let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad("bookmark.rename", "missing index"))? as usize;
+        cmd!("bookmark.rename", "Rename Bookmark", [], None, "{index? | path?: [usize], name}", has_doc, |s, p| {
+            let path = bookmark_path_param("bookmark.rename", p)?;
             let name =
                 str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad("bookmark.rename", "missing name"))?.to_string();
             s.edit(|d, _| {
-                let b = d.bookmarks.get_mut(i).ok_or_else(|| bad("bookmark.rename", format!("no bookmark {i}")))?;
+                let b = bookmark_at_mut(&mut d.bookmarks, &path).ok_or_else(|| bad("bookmark.rename", format!("no bookmark {path:?}")))?;
                 b.name = name;
                 Ok(Value::Null)
             })
@@ -118,15 +118,28 @@ pub fn specs() -> Vec<CommandSpec> {
                         }
                     }
                     d.bookmarks.push(Bookmark { name, anchor, page, children: vec![], generated_by_toc: false });
-                    Ok(json!({"index": d.bookmarks.len() - 1}))
+                    if anchor.is_some() {
+                        d.sync_anchor_bookmarks();
+                    }
+                    let index = d.bookmarks.len().saturating_sub(1);
+                    Ok(json!({"index": index}))
                 })
             }
         ),
-        cmd!("bookmark.delete", "Delete Bookmark", [], None, "{index}", has_doc, |s, p| {
-            let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad("bookmark.delete", "missing index"))? as usize;
+        cmd!("bookmark.delete", "Delete Bookmark", [], None, "{index? | path?: [usize] | anchor?: text anchor id}", has_doc, |s, p| {
+            let anchor = p.get("anchor").and_then(Value::as_u64);
+            let path = if anchor.is_some() { None } else { Some(bookmark_path_param("bookmark.delete", p)?) };
             s.edit(|d, _| {
-                if i < d.bookmarks.len() {
-                    d.bookmarks.remove(i);
+                if let Some(id) = anchor {
+                    remove_bookmarks_for_anchor(&mut d.bookmarks, id);
+                    d.sync_anchor_bookmarks();
+                } else if let Some(path) = path
+                    && let Some((parent_list, i)) = bookmark_list_and_index_mut(&mut d.bookmarks, &path)
+                    && i < parent_list.len()
+                {
+                    let removed = parent_list.remove(i);
+                    parent_list.splice(i..i, removed.children);
+                    d.sync_anchor_bookmarks();
                 }
                 Ok(Value::Null)
             })
@@ -142,6 +155,49 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(Value::Array(d.bookmarks.iter().map(|b| resolved(b, &index)).collect()))
         }),
     ]
+}
+
+/// Parse `path: [usize, ...]` or top-level `index: usize` for bookmark commands.
+fn bookmark_path_param(id: &str, p: &Value) -> Result<Vec<usize>> {
+    if let Some(arr) = p.get("path").and_then(Value::as_array) {
+        let path: Option<Vec<usize>> = arr.iter().map(|v| v.as_u64().and_then(|n| usize::try_from(n).ok())).collect();
+        let path = path.filter(|v| !v.is_empty()).ok_or_else(|| bad(id, "invalid bookmark path"))?;
+        return Ok(path);
+    }
+    let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad(id, "missing index"))? as usize;
+    Ok(vec![i])
+}
+
+fn bookmark_at_mut<'a>(mut list: &'a mut [Bookmark], path: &[usize]) -> Option<&'a mut Bookmark> {
+    let (&last, parents) = path.split_last()?;
+    for &i in parents {
+        list = &mut list.get_mut(i)?.children;
+    }
+    list.get_mut(last)
+}
+
+fn bookmark_list_and_index_mut<'a>(mut list: &'a mut Vec<Bookmark>, path: &[usize]) -> Option<(&'a mut Vec<Bookmark>, usize)> {
+    let (&last, parents) = path.split_last()?;
+    for &i in parents {
+        list = &mut list.get_mut(i)?.children;
+    }
+    Some((list, last))
+}
+
+fn remove_bookmarks_for_anchor(root: &mut Vec<Bookmark>, id: u64) {
+    let mut pending = vec![root];
+    while let Some(bookmarks) = pending.pop() {
+        let mut i = 0;
+        while i < bookmarks.len() {
+            if bookmarks.get(i).is_some_and(|b| b.anchor == Some(id)) {
+                let removed = bookmarks.remove(i);
+                bookmarks.splice(i..i, removed.children);
+            } else {
+                i += 1;
+            }
+        }
+        pending.extend(bookmarks.iter_mut().map(|b| &mut b.children));
+    }
 }
 
 /// `url`, `email`, `page` (1-based) or `anchor` (a text anchor's id, or its name).

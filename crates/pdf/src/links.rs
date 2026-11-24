@@ -264,47 +264,78 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
 
 /// The document outline from the bookmarks (bookmarks to pages that weren't exported are skipped).
 pub(crate) fn outline(doc: &Document, sheets: &[Sheet], cache: &designcraft_compose::Cache) -> Option<Outline> {
-    fn ordered<'a>(bookmarks: &'a [Bookmark], index: &designcraft_compose::xref::XrefIndex) -> Vec<&'a Bookmark> {
-        let mut anchors: Vec<_> = bookmarks.iter().filter(|b| b.anchor.is_some()).collect();
+    fn collect_resolved<'a>(
+        doc: &Document,
+        sheets: &[Sheet],
+        index: &designcraft_compose::xref::XrefIndex,
+        bookmarks: &'a [Bookmark],
+        out: &mut Vec<(&'a Bookmark, XyzDestination)>,
+    ) {
+        for b in bookmarks {
+            let dest = match b.anchor {
+                Some(a) => anchor_destination(doc, sheets, index, a),
+                None => sheet_of_page(doc, sheets, b.page).map(|i| XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0))),
+            };
+            if let Some(d) = dest {
+                out.push((b, d));
+            } else {
+                // Promote resolved descendants when an ancestor is unresolved or on an unexported page.
+                collect_resolved(doc, sheets, index, &b.children, out);
+            }
+        }
+    }
+
+    fn ordered<'a>(
+        entries: Vec<(&'a Bookmark, XyzDestination)>,
+        index: &designcraft_compose::xref::XrefIndex,
+    ) -> Vec<(&'a Bookmark, XyzDestination)> {
+        let mut anchors = Vec::new();
+        let mut slots = Vec::with_capacity(entries.len());
+        for entry in entries {
+            if entry.0.anchor.is_some() {
+                anchors.push(entry);
+                slots.push(None);
+            } else {
+                slots.push(Some(entry));
+            }
+        }
         let position = |b: &Bookmark| {
             b.anchor
                 .and_then(|a| index.place(a))
                 .map_or((usize::MAX, f64::INFINITY, f64::INFINITY), |place| (place.page, place.point.x, place.point.y))
         };
-        anchors.sort_by(|a, b| {
+        anchors.sort_by(|(a, _), (b, _)| {
             let (ap, ax, ay) = position(a);
             let (bp, bx, by) = position(b);
             ap.cmp(&bp).then_with(|| ax.total_cmp(&bx)).then_with(|| ay.total_cmp(&by))
         });
         let mut anchors = anchors.into_iter();
-        bookmarks.iter().filter_map(|b| if b.anchor.is_some() { anchors.next() } else { Some(b) }).collect()
+        slots.into_iter().filter_map(|slot| slot.or_else(|| anchors.next())).collect()
     }
 
-    fn node(doc: &Document, sheets: &[Sheet], index: &designcraft_compose::xref::XrefIndex, b: &Bookmark) -> Option<OutlineNode> {
-        let destination = match b.anchor {
-            Some(a) => anchor_destination(doc, sheets, index, a)?,
-            None => {
-                let i = sheet_of_page(doc, sheets, b.page)?;
-                XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0))
-            }
-        };
-        let mut n = OutlineNode::new(b.name.clone(), destination);
-        for c in ordered(&b.children, index) {
-            if let Some(cn) = node(doc, sheets, index, c) {
-                n.push_child(cn);
-            }
-        }
-        Some(n)
+    fn build_level(doc: &Document, sheets: &[Sheet], index: &designcraft_compose::xref::XrefIndex, bookmarks: &[Bookmark]) -> Vec<OutlineNode> {
+        let mut entries = Vec::new();
+        collect_resolved(doc, sheets, index, bookmarks, &mut entries);
+        ordered(entries, index)
+            .into_iter()
+            .map(|(b, dest)| {
+                let mut n = OutlineNode::new(b.name.clone(), dest);
+                for child in build_level(doc, sheets, index, &b.children) {
+                    n.push_child(child);
+                }
+                n
+            })
+            .collect()
     }
+
     if doc.bookmarks.is_empty() {
         return None;
     }
+    let bookmarks = doc.bookmarks_for_export();
     let mut o = Outline::new();
     let index = cache.xref_index(doc);
-    for b in ordered(&doc.bookmarks, &index) {
-        if let Some(n) = node(doc, sheets, &index, b) {
-            o.push_child(n);
-        }
+    for n in build_level(doc, sheets, &index, &bookmarks) {
+        o.push_child(n);
     }
     Some(o)
 }

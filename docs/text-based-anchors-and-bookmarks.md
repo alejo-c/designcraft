@@ -7,7 +7,7 @@ This guide describes the implementation introduced by commit ea999c84, ANCHOR2: 
 - Bookmark gained anchor: Option<u64>. In serialized document JSON its key is anchor, containing the numeric ID of a TextAnchor. None defaults when the field is absent and is omitted when saving.
 - Bookmark still has name: String, page: usize, children: Vec<Bookmark>, and generated_by_toc: bool. The JSON key for the ownership flag is generatedByToc.
 - No bookmark destination enum was introduced. When anchor is present, it takes precedence over page. When anchor is absent or null, the bookmark is a legacy page bookmark.
-- TextAnchor was not changed. Its persisted fields remain id: u64 and name: String. It has no page, position, selected-text string, or bookmark flag.
+- TextAnchor gained an optional `parent: Option<u64>` field (`parent` in JSON, omitted when absent). It holds the numeric ID of another TextAnchor to organize text anchors into a multi-level tree. Its other persisted fields remain `id: u64` and `name: String`. It still has no page, position, selected-text string, or bookmark flag.
 - Document.bookmarks remains Vec<Bookmark>. No top-level Document field was added. Its elements now support the additional anchor field.
 - Story.anchors remains Vec<Arc<TextAnchor>>. Its position mechanism is unchanged: each anchor corresponds to an ANCHOR_MARK character, U+E00B, in Story.text, with payloads in marker order.
 - Session gained cut_text_document: Option<u64> for clipboard move tracking. This is internal runtime state, not a saved Document field or an external integration parameter.
@@ -18,8 +18,10 @@ An anchor is a destination point in story text, not an anchored page object and 
 
 - Select the destination through text.select. Supply the story ID and anchor/focus endpoints as numeric UTF-8 byte offsets into the current story text. Equal endpoints select a caret; a range places the new anchor at the start of that range. Table-cell and footnote destinations are not supported by this workflow.
 - The anchor parameter of text.select is a selection endpoint, not a TextAnchor ID. Do not confuse it with the anchor parameter of bookmark.add.
-- Execute anchor.create with params {"name":"Introduction"}. It inserts the marker and returns an object whose id is the new anchor ID. The name must be nonempty and must not already belong to another anchor in the document.
-- Execute bookmark.add with params containing anchor set to that returned numeric ID and, optionally, name set to the desired bookmark label. Omit page entirely. The command returns an object with the new bookmark's index.
+- Execute anchor.create with params {"name":"Introduction"} (and optional parent set to an existing anchor's numeric ID or unambiguous name). It inserts the marker and returns an object whose id is the new anchor ID. The name must be nonempty and must not already belong to another anchor in the document.
+- Execute anchor.setParent with params {"id": anchor_id, "parent": parent_id_or_null} to move a text anchor under another text anchor or back to the top level. Cycles are rejected. Any anchored bookmarks referencing that anchor or its descendants automatically sync their nesting to the nearest bookmarked ancestor (or top level).
+- Execute bookmark.add with params containing anchor set to that returned numeric ID and, optionally, name set to the desired bookmark label. Omit page entirely. The command inserts the bookmark at its nearest bookmarked ancestor in the text anchor tree (or top level if none) and reparents any already-bookmarked descendants beneath it.
+- bookmark.delete accepts index, path (an array of 0-based indices for nested bookmarks), or anchor (numeric TextAnchor ID). Removing a bookmark promotes its surviving children to its parent list. bookmark.rename also accepts path in addition to index.
 - Keep the returned anchor ID as the destination identity. Do not derive it from the current page, byte position, or name. Preserve its integer precision as a u64.
 - If name is omitted from bookmark.add when an existing anchor is supplied, the bookmark initially uses that anchor's name. Bookmark and anchor names are separate afterward; renaming the anchor does not rename the bookmark.
 
@@ -41,7 +43,7 @@ Check the response's ok field and use result only on success. The transport is d
 
 The Text Anchors panel's Bookmark icon toggle uses bookmark.add with the existing anchor's ID. The Bookmarks panel's creation button uses the selected-text shortcut.
 
-The Text Anchors panel keeps its add icon in a fixed footer outside the scrolling list. It is enabled for a story-text selection or a selected text frame. The name dialog starts with the selected text, or an empty name for a selected frame. A frame destination is placed at the start of its composed text range. Each anchor has one row: destination name, bookmark toggle, rename icon and delete icon. Rename opens the same name dialog. Cancelling the dialog does not create or rename an anchor; invalid names leave it open with the command error. The dialog retains its original destination and refuses confirmation in another document.
+The Text Anchors panel renders text anchors as a collapsible tree (siblings ordered by page, then x, then y). Each row has an expand/collapse toggle when it has children, the destination name (with a right-click menu offering Move to Parent, New Child Text Anchor…, bookmark toggle, Rename…, and Delete), a bookmark icon toggle, a rename icon and a delete icon. Any node in the tree — with or without children — can independently be toggled as a bookmark; if a parent anchor is not bookmarked (or is unresolved / on an unexported page), its bookmarked descendants promote to the nearest bookmarked ancestor (or top level) in the PDF outline. The New/Rename Text Anchor dialog also exposes a Parent selector. The Bookmarks panel renders nested bookmarks as a collapsible tree as well.
 
 Clicking a text anchor or its bookmark selects the anchor's current text position and centers that position in the canvas while preserving zoom. Legacy page bookmarks still navigate to their page. Long names are truncated at the end to keep Delete visible.
 
@@ -52,7 +54,7 @@ PDF text anchor bookmarks sort within each sibling list by absolute page, then i
 ## Reading destinations correctly
 
 - bookmark.list returns name, anchor, page, generatedByToc, and children. Its page is the current absolute page index, starting at zero, or null when an anchor cannot be resolved. Its anchor is the numeric target ID or null for a page bookmark. These destination rules also apply to returned children.
-- anchor.list returns id, name, story, pos, and page. Its pos is the marker's current UTF-8 byte offset. Its page is a page label string, or null, not the numeric page index returned by bookmark.list.
+- anchor.list returns id, name, parent, story, pos, and page. Its parent is the effective parent anchor ID or null. Its pos is the marker's current UTF-8 byte offset. Its page is a page label string, or null, not the numeric page index returned by bookmark.list.
 - anchor.list orders resolved anchors by absolute page index, then increasing composed x coordinate, then increasing composed y coordinate. Unresolved anchors follow resolved destinations; story, marker position and anchor identity break ties deterministically.
 - A page label can include section numbering. Do not convert anchor.list.page into an absolute page index or assume it is a decimal number.
 - Treat both pos and the resolved page as current observations. Re-query after edits; do not persist either as the identity of the destination.

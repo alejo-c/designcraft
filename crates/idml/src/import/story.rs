@@ -66,7 +66,7 @@ impl<'r> Importer<'r> {
             } else {
                 self.anchor_ids.insert(me, aid);
             }
-            anchor_list.push(Arc::new(designcraft_doc::TextAnchor { id: aid, name }));
+            anchor_list.push(Arc::new(designcraft_doc::TextAnchor { id: aid, name, parent: None }));
         }
         let mut xref_list = Vec::new();
         for (k, x) in xrefs.into_iter().enumerate() {

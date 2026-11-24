@@ -27,6 +27,9 @@ pub struct TextAnchor {
     pub id: u64,
     /// Shown in the Hyperlinks panel; paragraph destinations get a generated name.
     pub name: String,
+    /// Optional parent text anchor id forming a hierarchy of text anchors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -221,7 +224,7 @@ impl Story {
             let k = self.marks_before(ANCHOR_MARK, pos);
             for i in 0..n {
                 let id = self.next_anchor_id();
-                self.anchors.insert(k + i, Arc::new(TextAnchor { id, name: format!("Anchor {}", id & 0xFF_FFFF) }));
+                self.anchors.insert(k + i, Arc::new(TextAnchor { id, name: format!("Anchor {}", id & 0xFF_FFFF), parent: None }));
             }
         }
         let n = text.matches(XREF_MARK).count();
@@ -293,7 +296,7 @@ impl Story {
         }
         while self.anchors.len() < n {
             let id = self.next_anchor_id();
-            self.anchors.push(Arc::new(TextAnchor { id, name: format!("Anchor {}", id & 0xFF_FFFF) }));
+            self.anchors.push(Arc::new(TextAnchor { id, name: format!("Anchor {}", id & 0xFF_FFFF), parent: None }));
         }
         let n = self.text.matches(XREF_MARK).count();
         self.xrefs.truncate(n);
@@ -384,6 +387,146 @@ impl Document {
 
     pub fn anchor(&self, id: u64) -> Option<&TextAnchor> {
         self.stories.values().find_map(|s| s.anchors.iter().find(|a| a.id == id).map(|a| &**a))
+    }
+
+    /// Whether making `candidate_parent` the parent of anchor `id` would introduce a cycle.
+    pub fn anchor_parent_creates_cycle(&self, id: u64, candidate_parent: u64) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        let mut cur = Some(candidate_parent);
+        while let Some(curr) = cur {
+            if curr == id {
+                return true;
+            }
+            if !visited.insert(curr) {
+                return false;
+            }
+            cur = self.anchor(curr).and_then(|a| a.parent);
+        }
+        false
+    }
+
+    /// Valid parent anchor id for `id`, ignoring dangling or cyclic parent links.
+    pub fn effective_anchor_parent(&self, id: u64) -> Option<u64> {
+        let parent = self.anchor(id)?.parent?;
+        if self.find_anchor(parent).is_none() || self.anchor_parent_creates_cycle(id, parent) {
+            return None;
+        }
+        Some(parent)
+    }
+
+    /// Reconcile anchored bookmark nesting in `self.bookmarks` with [`TextAnchor::parent`].
+    ///
+    /// Anchored bookmarks whose anchor has a nearest bookmarked ancestor in the anchor tree move
+    /// under that ancestor's bookmark. Anchored bookmarks with no bookmarked ancestor in the
+    /// anchor tree that sit inside another anchored bookmark move back to the top level. Legacy
+    /// page bookmarks, TOC bookmarks, and bookmarks nested under page bookmarks stay in place.
+    pub fn sync_anchor_bookmarks(&mut self) {
+        let mut bookmarks = std::mem::take(&mut self.bookmarks);
+        self.reconcile_anchor_bookmarks(&mut bookmarks, true);
+        self.bookmarks = bookmarks;
+    }
+
+    /// A copy of `self.bookmarks` with [`TextAnchor::parent`] hierarchy applied without mutating
+    /// the document or flattening legacy manually-nested bookmarks whose anchors have no parent.
+    pub fn bookmarks_for_export(&self) -> Vec<crate::Bookmark> {
+        let mut bookmarks = self.bookmarks.clone();
+        self.reconcile_anchor_bookmarks(&mut bookmarks, false);
+        bookmarks
+    }
+
+    fn reconcile_anchor_bookmarks(&self, bookmarks: &mut Vec<crate::Bookmark>, unnest_roots: bool) {
+        fn collect_anchors(list: &[crate::Bookmark], out: &mut std::collections::HashSet<u64>) {
+            for b in list {
+                if let Some(a) = b.anchor {
+                    out.insert(a);
+                }
+                collect_anchors(&b.children, out);
+            }
+        }
+        let mut bookmarked = std::collections::HashSet::new();
+        collect_anchors(bookmarks, &mut bookmarked);
+        if bookmarked.is_empty() {
+            return;
+        }
+        let mut desired_parent: std::collections::HashMap<u64, Option<u64>> = std::collections::HashMap::new();
+        for &a in &bookmarked {
+            let mut cur = self.effective_anchor_parent(a);
+            let mut seen = std::collections::HashSet::from([a]);
+            let mut found = None;
+            while let Some(p) = cur {
+                if !seen.insert(p) {
+                    break;
+                }
+                if bookmarked.contains(&p) {
+                    found = Some(p);
+                    break;
+                }
+                cur = self.effective_anchor_parent(p);
+            }
+            desired_parent.insert(a, found);
+        }
+
+        let mut to_root: Vec<crate::Bookmark> = Vec::new();
+        let mut to_anchor: std::collections::HashMap<u64, Vec<crate::Bookmark>> = std::collections::HashMap::new();
+
+        fn detach(
+            list: &mut Vec<crate::Bookmark>,
+            parent_anchor: Option<u64>,
+            unnest_roots: bool,
+            desired_parent: &std::collections::HashMap<u64, Option<u64>>,
+            to_root: &mut Vec<crate::Bookmark>,
+            to_anchor: &mut std::collections::HashMap<u64, Vec<crate::Bookmark>>,
+        ) {
+            let mut i = 0;
+            while i < list.len() {
+                let my_anchor = list[i].anchor;
+                detach(&mut list[i].children, my_anchor, unnest_roots, desired_parent, to_root, to_anchor);
+                let move_to = match my_anchor {
+                    Some(a) => match desired_parent.get(&a).copied().flatten() {
+                        Some(target) if parent_anchor != Some(target) => Some(Some(target)),
+                        None if unnest_roots && parent_anchor.is_some() => Some(None),
+                        _ => None,
+                    },
+                    None => None,
+                };
+                if let Some(dest) = move_to {
+                    let b = list.remove(i);
+                    match dest {
+                        Some(target) => to_anchor.entry(target).or_default().push(b),
+                        None => to_root.push(b),
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        detach(bookmarks, None, unnest_roots, &desired_parent, &mut to_root, &mut to_anchor);
+        bookmarks.extend(to_root);
+
+        fn attach_pass(list: &mut [crate::Bookmark], to_anchor: &mut std::collections::HashMap<u64, Vec<crate::Bookmark>>) -> bool {
+            let mut progress = false;
+            for b in list.iter_mut() {
+                if let Some(a) = b.anchor
+                    && let Some(children) = to_anchor.remove(&a)
+                {
+                    b.children.extend(children);
+                    progress = true;
+                }
+                if attach_pass(&mut b.children, to_anchor) {
+                    progress = true;
+                }
+            }
+            progress
+        }
+        while !to_anchor.is_empty() {
+            if !attach_pass(bookmarks, &mut to_anchor) {
+                for (_, leftover) in to_anchor.drain() {
+                    bookmarks.extend(leftover);
+                }
+                break;
+            }
+        }
     }
 
     /// The anchor at the start of paragraph containing `pos` in `sid`, creating one if needed

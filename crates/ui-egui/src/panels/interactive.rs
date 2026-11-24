@@ -1,10 +1,94 @@
 //! Hyperlinks and Bookmarks panels (Window › Interactive).
 
+use std::collections::{HashMap, HashSet};
+
 use serde_json::{Value, json};
 
 use crate::DesignApp;
 use crate::app::file_dialogs::Bound;
 use crate::theme::Tokens;
+
+/// One row of the text anchor tree in display order (siblings keep `anchor.list` page/x/y order).
+pub(crate) struct AnchorTreeRow {
+    pub index: usize,
+    pub id: u64,
+    pub depth: usize,
+    pub has_children: bool,
+}
+
+/// Flatten `anchor.list` into pre-order tree rows while preserving `anchor.list` order among siblings.
+pub(crate) fn anchor_tree_rows(list: &[Value]) -> Vec<AnchorTreeRow> {
+    let ids: HashSet<u64> = list.iter().filter_map(|a| a["id"].as_u64()).collect();
+    let mut children: HashMap<Option<u64>, Vec<usize>> = HashMap::new();
+    for (index, a) in list.iter().enumerate() {
+        let parent = a["parent"].as_u64().filter(|p| ids.contains(p));
+        children.entry(parent).or_default().push(index);
+    }
+    let mut rows = Vec::with_capacity(list.len());
+    let mut visited = HashSet::with_capacity(list.len());
+    fn walk(
+        parent: Option<u64>,
+        depth: usize,
+        list: &[Value],
+        children: &HashMap<Option<u64>, Vec<usize>>,
+        visited: &mut HashSet<u64>,
+        rows: &mut Vec<AnchorTreeRow>,
+    ) {
+        let Some(indices) = children.get(&parent) else { return };
+        for &index in indices {
+            let Some(id) = list[index]["id"].as_u64() else { continue };
+            if !visited.insert(id) {
+                continue;
+            }
+            let has_children = children.get(&Some(id)).is_some_and(|c| !c.is_empty());
+            rows.push(AnchorTreeRow { index, id, depth, has_children });
+            walk(Some(id), depth + 1, list, children, visited, rows);
+        }
+    }
+    walk(None, 0, list, &children, &mut visited, &mut rows);
+    // Defensive fallback if corrupt data ever left an unreachable cycle.
+    for (index, a) in list.iter().enumerate() {
+        if let Some(id) = a["id"].as_u64()
+            && visited.insert(id)
+        {
+            rows.push(AnchorTreeRow { index, id, depth: 0, has_children: false });
+        }
+    }
+    rows
+}
+
+/// Anchor `root_id` together with all of its descendants in `list` (invalid parent targets for `root_id`).
+pub(crate) fn anchor_subtree_ids(list: &[Value], root_id: u64) -> HashSet<u64> {
+    let mut children: HashMap<u64, Vec<u64>> = HashMap::new();
+    for a in list {
+        if let (Some(id), Some(parent)) = (a["id"].as_u64(), a["parent"].as_u64()) {
+            children.entry(parent).or_default().push(id);
+        }
+    }
+    let mut out = HashSet::from([root_id]);
+    let mut stack = vec![root_id];
+    while let Some(cur) = stack.pop() {
+        if let Some(kids) = children.get(&cur) {
+            for &k in kids {
+                if out.insert(k) {
+                    stack.push(k);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn collect_bookmarked_anchors(bookmarks: &[Value], out: &mut HashSet<u64>) {
+    for b in bookmarks {
+        if let Some(id) = b["anchor"].as_u64() {
+            out.insert(id);
+        }
+        if let Some(children) = b["children"].as_array() {
+            collect_bookmarked_anchors(children, out);
+        }
+    }
+}
 
 fn dest_text(lang: &str, d: &Value, anchors: &[Value]) -> String {
     match d["kind"].as_str() {
@@ -50,8 +134,11 @@ pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
                 .selected_text(name)
                 .width(170.0)
                 .show_ui(ui, |ui| {
-                    for a in &anchors {
-                        if ui.selectable_label(a["id"].as_u64() == anchor, a["name"].as_str().unwrap_or("")).clicked() {
+                    for row in anchor_tree_rows(&anchors) {
+                        let a = &anchors[row.index];
+                        let name = a["name"].as_str().unwrap_or("");
+                        let label = if row.depth == 0 { name.to_string() } else { format!("{}{name}", "  ".repeat(row.depth)) };
+                        if ui.selectable_label(a["id"].as_u64() == anchor, label).clicked() {
                             anchor = a["id"].as_u64();
                         }
                     }
@@ -173,70 +260,127 @@ pub fn bookmarks(app: &mut DesignApp, ui: &mut egui::Ui) {
             ),
         );
     }
-    for (i, b) in list.iter().enumerate() {
-        let page = b["page"].as_u64().and_then(|p| usize::try_from(p).ok());
-        let key = egui::Id::unique(("bookmark_name", app.session.active().map(|d| d.uid), i));
-        let mut draft: Option<String> = ui.data(|d| d.get_temp(key));
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete"))).clicked() {
-                    let _ = app.run("bookmark.delete", json!({"index": i}));
-                    for index in 0..list.len() {
-                        let old = egui::Id::unique(("bookmark_name", app.session.active().map(|d| d.uid), index));
-                        ui.data_mut(|d| d.remove::<String>(old));
-                    }
-                    draft = None;
-                }
-                if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Rename"))).clicked() {
-                    draft = Some(b["name"].as_str().unwrap_or("").to_string());
-                }
-                let name = b["name"].as_str().unwrap_or("");
-                if ui
-                    .add_enabled(page.is_some(), egui::Button::selectable(false, name).truncate())
-                    .on_hover_text(format!(
-                        "{name}\n{}",
-                        page.map(|p| format!("{} {}", crate::i18n::tr(&app.ui.language, "Page"), app.session.page_label(p)))
-                            .unwrap_or_else(|| "Unresolved text anchor".into())
-                    ))
-                    .clicked()
-                    && let Some(page) = page
-                {
-                    if let Some(anchor) = b["anchor"].as_u64() {
-                        go_to_anchor(app, anchor);
-                    } else {
-                        crate::canvas::go_to_page(app, page);
-                    }
-                }
-            });
-        });
-        if let Some(mut name) = draft.take() {
-            let mut close = false;
-            ui.push_id(key, |ui| {
-                let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
-                ui.add(egui::TextEdit::singleline(&mut name).desired_width(170.0)).labelled_by(label.id);
+    let doc_uid = app.session.active().map(|d| d.uid);
+    let draft_key = egui::Id::unique(("bookmark_rename_draft", doc_uid));
+    let mut active_draft: Option<(Vec<usize>, String)> = ui.data(|d| d.get_temp(draft_key));
+    let has_hierarchy = list.iter().any(|b| b["children"].as_array().is_some_and(|c| !c.is_empty()));
+
+    struct BookmarkTreeCtx {
+        has_hierarchy: bool,
+        doc_uid: Option<u64>,
+    }
+
+    fn render_bookmarks(
+        app: &mut DesignApp,
+        ui: &mut egui::Ui,
+        items: &[Value],
+        prefix: &[usize],
+        ctx: &BookmarkTreeCtx,
+        active_draft: &mut Option<(Vec<usize>, String)>,
+    ) {
+        let depth = prefix.len();
+        let t = Tokens::get(ui.ctx());
+        for (i, b) in items.iter().enumerate() {
+            let mut path = prefix.to_vec();
+            path.push(i);
+            let page = b["page"].as_u64().and_then(|p| usize::try_from(p).ok());
+            let children = b["children"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            let has_children = !children.is_empty();
+            let open_key = egui::Id::unique(("bookmark_tree_open", ctx.doc_uid, &path));
+            let mut open: bool = ui.data(|d| d.get_temp(open_key)).unwrap_or(true);
+            let name = b["name"].as_str().unwrap_or("");
+            ui.push_id(&path, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!name.trim().is_empty(), egui::Button::new(crate::i18n::tr(&app.ui.language, "Save"))).clicked() {
-                        match app.run("bookmark.rename", json!({"index": i, "name": name})) {
-                            Ok(_) => close = true,
-                            Err(e) => app.status_error("Bookmarks", e),
-                        }
+                    if depth > 0 {
+                        ui.add_space((depth as f32 * 14.0).min(84.0));
                     }
-                    close |= ui.button(crate::i18n::tr(&app.ui.language, "Cancel")).clicked();
+                    if has_children {
+                        let toggle_tip = format!(
+                            "{} {name}",
+                            crate::i18n::tr(&app.ui.language, if open { "Collapse" } else { "Expand" })
+                        );
+                        let toggle = ui
+                            .add(egui::Button::new("").frame(false).min_size(egui::vec2(18.0, 20.0)))
+                            .accessible_name(&toggle_tip)
+                            .on_hover_text(&toggle_tip);
+                        crate::icons::paint(
+                            ui.painter(),
+                            toggle.rect.shrink(3.0),
+                            if open { "chevron-down" } else { "chevron-right" },
+                            t.icon,
+                        );
+                        if toggle.clicked() {
+                            open = !open;
+                            ui.data_mut(|d| d.insert_temp(open_key, open));
+                        }
+                    } else if ctx.has_hierarchy {
+                        ui.add_space(18.0);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete"))).clicked() {
+                            let _ = app.run("bookmark.delete", json!({"path": path}));
+                            *active_draft = None;
+                        }
+                        if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Rename"))).clicked() {
+                            *active_draft = Some((path.clone(), name.to_string()));
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            if ui
+                                .add_enabled(page.is_some(), egui::Button::selectable(false, name).truncate())
+                                .on_hover_text(format!(
+                                    "{name}\n{}",
+                                    page.map(|p| format!("{} {}", crate::i18n::tr(&app.ui.language, "Page"), app.session.page_label(p)))
+                                        .unwrap_or_else(|| "Unresolved text anchor".into())
+                                ))
+                                .clicked()
+                                && let Some(page) = page
+                            {
+                                if let Some(anchor) = b["anchor"].as_u64() {
+                                    go_to_anchor(app, anchor);
+                                } else {
+                                    crate::canvas::go_to_page(app, page);
+                                }
+                            }
+                        });
+                    });
                 });
+                if active_draft.as_ref().is_some_and(|(p, _)| *p == path) {
+                    let mut draft_name = active_draft.as_ref().map(|(_, n)| n.clone()).unwrap_or_default();
+                    let mut close = false;
+                    let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
+                    ui.add(egui::TextEdit::singleline(&mut draft_name).desired_width(170.0)).labelled_by(label.id);
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(!draft_name.trim().is_empty(), egui::Button::new(crate::i18n::tr(&app.ui.language, "Save"))).clicked() {
+                            match app.run("bookmark.rename", json!({"path": path, "name": draft_name})) {
+                                Ok(_) => close = true,
+                                Err(e) => app.status_error("Bookmarks", e),
+                            }
+                        }
+                        close |= ui.button(crate::i18n::tr(&app.ui.language, "Cancel")).clicked();
+                    });
+                    if close {
+                        *active_draft = None;
+                    } else {
+                        *active_draft = Some((path.clone(), draft_name));
+                    }
+                }
             });
-            if !close {
-                draft = Some(name);
+            if has_children && open {
+                render_bookmarks(app, ui, children, &path, ctx, active_draft);
             }
         }
-        ui.data_mut(|d| match draft {
-            Some(name) => {
-                d.insert_temp(key, name);
-            }
-            None => {
-                d.remove::<String>(key);
-            }
-        });
     }
+
+    let ctx = BookmarkTreeCtx { has_hierarchy, doc_uid };
+    render_bookmarks(app, ui, &list, &[], &ctx, &mut active_draft);
+    ui.data_mut(|d| match active_draft {
+        Some(draft) => {
+            d.insert_temp(draft_key, draft);
+        }
+        None => {
+            d.remove::<(Vec<usize>, String)>(draft_key);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -319,56 +463,218 @@ fn text_anchor_target(app: &mut DesignApp) -> Option<(designcraft_doc::TextSel, 
 pub fn text_anchors(app: &mut DesignApp, ui: &mut egui::Ui) {
     let list = app.session.execute("anchor.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     let bookmarks = app.session.execute("bookmark.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-    let list_height = (ui.available_height() - 24.0 - ui.spacing().item_spacing.y).max(0.0);
-    egui::ScrollArea::vertical().id_salt("text_anchors_list").max_height(list_height).min_scrolled_height(0.0).auto_shrink([false, false]).show(
-        ui,
-        |ui| {
-            for a in list {
-                let id = a["id"].clone();
-                ui.push_id(id.to_string(), |ui| {
-                    ui.horizontal(|ui| {
-                        let name = a["name"].as_str().unwrap_or("");
-                        let width = (ui.available_width() - 3.0 * (24.0 + ui.spacing().item_spacing.x)).max(0.0);
-                        if ui
-                            .add_enabled_ui(!a["page"].is_null(), |ui| ui.add_sized([width, 24.0], egui::Button::selectable(false, name).truncate()))
-                            .inner
-                            .on_hover_text(name)
-                            .clicked()
-                            && let Some(id) = id.as_u64()
-                        {
-                            go_to_anchor(app, id);
+    let mut bookmarked = HashSet::new();
+    collect_bookmarked_anchors(&bookmarks, &mut bookmarked);
+    let doc_uid = app.session.active().map(|st| st.uid);
+    let target = text_anchor_target(app);
+    let tree_rows = anchor_tree_rows(&list);
+    let has_hierarchy = tree_rows.iter().any(|r| r.has_children);
+    let ids: HashSet<u64> = list.iter().filter_map(|a| a["id"].as_u64()).collect();
+    let mut children_map: HashMap<Option<u64>, Vec<usize>> = HashMap::new();
+    for (index, a) in list.iter().enumerate() {
+        let parent = a["parent"].as_u64().filter(|p| ids.contains(p));
+        children_map.entry(parent).or_default().push(index);
+    }
+
+    struct AnchorTreeCtx<'a> {
+        list: &'a [Value],
+        tree_rows: &'a [AnchorTreeRow],
+        children_map: &'a HashMap<Option<u64>, Vec<usize>>,
+        bookmarked: &'a HashSet<u64>,
+        target: &'a Option<(designcraft_doc::TextSel, String)>,
+        doc_uid: Option<u64>,
+        has_hierarchy: bool,
+    }
+
+    fn render_anchors(app: &mut DesignApp, ui: &mut egui::Ui, parent: Option<u64>, depth: usize, ctx: &AnchorTreeCtx<'_>, visited: &mut HashSet<u64>) {
+        let Some(indices) = ctx.children_map.get(&parent) else { return };
+        let t = Tokens::get(ui.ctx());
+        for &index in indices {
+            let a = &ctx.list[index];
+            let Some(id) = a["id"].as_u64() else { continue };
+            if !visited.insert(id) {
+                continue;
+            }
+            let name = a["name"].as_str().unwrap_or("");
+            let has_children = ctx.children_map.get(&Some(id)).is_some_and(|c| !c.is_empty());
+            let open_key = egui::Id::unique(("anchor_tree_open", ctx.doc_uid, id));
+            let mut open: bool = ui.data(|d| d.get_temp(open_key)).unwrap_or(true);
+            let is_bookmarked = ctx.bookmarked.contains(&id);
+            ui.push_id(id, |ui| {
+                ui.horizontal(|ui| {
+                    if depth > 0 {
+                        ui.add_space((depth as f32 * 14.0).min(84.0));
+                    }
+                    if has_children {
+                        let toggle_tip = format!(
+                            "{} {name}",
+                            crate::i18n::tr(&app.ui.language, if open { "Collapse" } else { "Expand" })
+                        );
+                        let toggle = ui
+                            .add(egui::Button::new("").frame(false).min_size(egui::vec2(18.0, 24.0)))
+                            .accessible_name(&toggle_tip)
+                            .on_hover_text(&toggle_tip);
+                        crate::icons::paint(
+                            ui.painter(),
+                            toggle.rect.shrink(3.0),
+                            if open { "chevron-down" } else { "chevron-right" },
+                            t.icon,
+                        );
+                        if toggle.clicked() {
+                            open = !open;
+                            ui.data_mut(|d| d.insert_temp(open_key, open));
                         }
-                        let bookmark = bookmarks.iter().position(|b| b["anchor"] == id);
-                        if crate::icons::button(ui, "panel-bookmarks", 24.0, bookmark.is_some(), crate::i18n::tr(&app.ui.language, "Bookmark"))
+                    } else if ctx.has_hierarchy {
+                        ui.add_space(18.0);
+                    }
+                    let width = (ui.available_width() - 3.0 * (24.0 + ui.spacing().item_spacing.x)).max(0.0);
+                    let resp = ui
+                        .add_enabled_ui(!a["page"].is_null(), |ui| ui.add_sized([width, 24.0], egui::Button::selectable(false, name).truncate()))
+                        .inner
+                        .on_hover_text(name);
+                    if resp.clicked() {
+                        go_to_anchor(app, id);
+                    }
+                    resp.context_menu(|ui| {
+                        let lang = app.ui.language.clone();
+                        crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&lang, "Move to Parent")), |ui| {
+                            let forbidden = anchor_subtree_ids(ctx.list, id);
+                            let mut any = false;
+                            if parent.is_some() {
+                                any = true;
+                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "[No Parent]"))).clicked() {
+                                    if let Err(e) = app.run("anchor.setParent", json!({"id": id, "parent": Value::Null})) {
+                                        app.status_error("Text Anchors", e);
+                                    }
+                                    ui.close();
+                                }
+                            }
+                            for cand in ctx.tree_rows {
+                                if forbidden.contains(&cand.id) || parent == Some(cand.id) {
+                                    continue;
+                                }
+                                any = true;
+                                let cand_name = ctx.list[cand.index]["name"].as_str().unwrap_or("");
+                                let label = if cand.depth == 0 {
+                                    cand_name.to_string()
+                                } else {
+                                    format!("{}{cand_name}", "  ".repeat(cand.depth))
+                                };
+                                if ui.button(label).clicked() {
+                                    if let Err(e) = app.run("anchor.setParent", json!({"id": id, "parent": cand.id})) {
+                                        app.status_error("Text Anchors", e);
+                                    }
+                                    ui.close();
+                                }
+                            }
+                            if !any {
+                                crate::rtl::label(
+                                    ui,
+                                    egui::RichText::new(crate::i18n::tr(&lang, "No other text anchors")).size(11.0).color(t.text_dim),
+                                );
+                            }
+                        });
+                        if ui
+                            .add_enabled(
+                                ctx.target.is_some(),
+                                egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, "New Child Text Anchor…"))),
+                            )
                             .clicked()
+                            && let Some((selection, default_name)) = ctx.target.clone()
                         {
-                            let result = match bookmark {
-                                Some(index) => app.run("bookmark.delete", json!({"index": index})),
-                                None => app.run("bookmark.add", json!({"anchor": id})),
+                            app.ui.dialog = Some(crate::dialogs::Dialog::new(
+                                "textAnchor",
+                                json!({
+                                    "name": default_name,
+                                    "parent": id,
+                                    "selection": selection,
+                                    "uid": ctx.doc_uid,
+                                    "focusName": true
+                                }),
+                            ));
+                            ui.close();
+                        }
+                        ui.separator();
+                        let bm_label = if is_bookmarked { "Remove Bookmark" } else { "Add Bookmark" };
+                        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, bm_label))).clicked() {
+                            let result = if is_bookmarked {
+                                app.run("bookmark.delete", json!({"anchor": id}))
+                            } else {
+                                app.run("bookmark.add", json!({"anchor": id}))
                             };
                             if let Err(e) = result {
                                 app.status_error("Text Anchors", e);
                             }
+                            ui.close();
                         }
-                        if crate::icons::button(ui, "tool-pencil", 24.0, false, crate::i18n::tr(&app.ui.language, "Rename")).clicked() {
+                        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Rename…"))).clicked() {
                             app.ui.dialog = Some(crate::dialogs::Dialog::new(
                                 "textAnchor",
                                 json!({
-                                    "id": id, "name": name, "uid": app.session.active().map(|st| st.uid), "focusName": true
+                                    "id": id,
+                                    "name": name,
+                                    "parent": parent,
+                                    "uid": ctx.doc_uid,
+                                    "focusName": true
                                 }),
                             ));
+                            ui.close();
                         }
-                        if crate::icons::button(ui, "trash", 24.0, false, crate::i18n::tr(&app.ui.language, "Delete")).clicked()
-                            && let Err(e) = app.run("anchor.delete", json!({"id": id, "removeBookmarks": true}))
-                        {
-                            app.status_error("Text Anchors", e);
+                        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Delete"))).clicked() {
+                            if let Err(e) = app.run("anchor.delete", json!({"id": id, "removeBookmarks": true})) {
+                                app.status_error("Text Anchors", e);
+                            }
+                            ui.close();
                         }
                     });
+                    if crate::icons::button(ui, "panel-bookmarks", 24.0, is_bookmarked, crate::i18n::tr(&app.ui.language, "Bookmark")).clicked() {
+                        let result = if is_bookmarked {
+                            app.run("bookmark.delete", json!({"anchor": id}))
+                        } else {
+                            app.run("bookmark.add", json!({"anchor": id}))
+                        };
+                        if let Err(e) = result {
+                            app.status_error("Text Anchors", e);
+                        }
+                    }
+                    if crate::icons::button(ui, "tool-pencil", 24.0, false, crate::i18n::tr(&app.ui.language, "Rename")).clicked() {
+                        app.ui.dialog = Some(crate::dialogs::Dialog::new(
+                            "textAnchor",
+                            json!({
+                                "id": id, "name": name, "parent": parent, "uid": ctx.doc_uid, "focusName": true
+                            }),
+                        ));
+                    }
+                    if crate::icons::button(ui, "trash", 24.0, false, crate::i18n::tr(&app.ui.language, "Delete")).clicked()
+                        && let Err(e) = app.run("anchor.delete", json!({"id": id, "removeBookmarks": true}))
+                    {
+                        app.status_error("Text Anchors", e);
+                    }
                 });
+            });
+            if has_children && open {
+                render_anchors(app, ui, Some(id), depth + 1, ctx, visited);
             }
+        }
+    }
+
+    let list_height = (ui.available_height() - 24.0 - ui.spacing().item_spacing.y).max(0.0);
+    egui::ScrollArea::vertical().id_salt("text_anchors_list").max_height(list_height).min_scrolled_height(0.0).auto_shrink([false, false]).show(
+        ui,
+        |ui| {
+            let ctx = AnchorTreeCtx {
+                list: &list,
+                tree_rows: &tree_rows,
+                children_map: &children_map,
+                bookmarked: &bookmarked,
+                target: &target,
+                doc_uid,
+                has_hierarchy,
+            };
+            let mut visited = HashSet::with_capacity(list.len());
+            render_anchors(app, ui, None, 0, &ctx, &mut visited);
         },
     );
-    let target = text_anchor_target(app);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let label = crate::i18n::tr(&app.ui.language, "New Text Anchor");
         let add =
@@ -381,7 +687,7 @@ pub fn text_anchors(app: &mut DesignApp, ui: &mut egui::Ui) {
             app.ui.dialog = Some(crate::dialogs::Dialog::new(
                 "textAnchor",
                 json!({
-                    "name": name, "selection": selection, "uid": app.session.active().map(|st| st.uid), "focusName": true
+                    "name": name, "parent": Value::Null, "selection": selection, "uid": doc_uid, "focusName": true
                 }),
             ));
         }
@@ -659,6 +965,120 @@ mod text_anchor_panel_tests {
             assert!(h.query_by_label("Anchor 0").is_none_or(|node| node.rect().top() < first_top));
             assert!(h.query_by_role(egui::accesskit::Role::TextInput).is_none());
         }
+    }
+
+    #[test]
+    fn anchor_tree_renders_indented_collapsible_rows_and_toggles_nested_bookmarks() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Part\nChapter\nSection"})).unwrap();
+        app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 0})).unwrap();
+        let part = app.run("anchor.create", json!({"name": "Part"})).unwrap()["id"].clone();
+        app.run("text.select", json!({"story": frame["story"], "anchor": 8, "focus": 8})).unwrap();
+        let chapter = app.run("anchor.create", json!({"name": "Chapter", "parent": part})).unwrap()["id"].clone();
+        app.run("text.select", json!({"story": frame["story"], "anchor": 19, "focus": 19})).unwrap();
+        let section = app.run("anchor.create", json!({"name": "Section", "parent": chapter})).unwrap()["id"].clone();
+
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(320.0, 500.0))
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "en");
+            })
+            .build_ui_state(
+                |ui, app| {
+                    text_anchors(app, ui);
+                    crate::dialogs::show(app, ui.ctx());
+                },
+                app,
+            );
+        h.run_steps(3);
+
+        // Child rows are indented further right than their parent.
+        let part_rect = h.get_by_label("Part").rect();
+        let chapter_rect = h.get_by_label("Chapter").rect();
+        let section_rect = h.get_by_label("Section").rect();
+        assert!(part_rect.left() < chapter_rect.left() && chapter_rect.left() < section_rect.left());
+
+        // Collapse Part hides Chapter and Section; Expand brings them back.
+        h.get_by_label("Collapse Part").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Chapter").is_none());
+        assert!(h.query_by_label("Section").is_none());
+        h.get_by_label("Expand Part").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Section").is_some());
+
+        // Toggle bookmark on Section (leaf) and Part (root), skipping Chapter (intermediate):
+        // Section nests under Part in Document.bookmarks, and toggling Part off promotes Section.
+        assert_eq!(h.get_all_by_label("Bookmark").count(), 3);
+        h.get_all_by_label("Bookmark").nth(2).unwrap().click();
+        h.run_steps(3);
+        h.get_all_by_label("Bookmark").next().unwrap().click();
+        h.run_steps(3);
+        let d = &h.state().session.doc().unwrap().doc;
+        assert_eq!(d.bookmarks.len(), 1);
+        assert_eq!(d.bookmarks[0].anchor, part.as_u64());
+        assert_eq!(d.bookmarks[0].children.len(), 1);
+        assert_eq!(d.bookmarks[0].children[0].anchor, section.as_u64());
+
+        // Toggle Part off: Section remains bookmarked at root.
+        h.get_all_by_label("Bookmark").next().unwrap().click();
+        h.run_steps(3);
+        let d = &h.state().session.doc().unwrap().doc;
+        assert_eq!(d.bookmarks.len(), 1);
+        assert_eq!(d.bookmarks[0].anchor, section.as_u64());
+
+        // Right-click Section -> Move to Parent -> [No Parent] moves Section to root with undo.
+        let sec_center = h.get_by_label("Section").rect().center();
+        h.event(egui::Event::PointerMoved(sec_center));
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: sec_center, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() });
+            h.run_steps(2);
+        }
+        h.get_by_label("Move to Parent").hover();
+        h.run_steps(3);
+        h.get_by_label("[No Parent]").click();
+        h.run_steps(3);
+        assert_eq!(h.state().session.doc().unwrap().doc.anchor(section.as_u64().unwrap()).unwrap().parent, None);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().session.doc().unwrap().doc.anchor(section.as_u64().unwrap()).unwrap().parent, chapter.as_u64());
+    }
+
+    #[test]
+    fn bookmarks_panel_displays_nested_bookmarks_and_edits_by_path() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Part\nSection"})).unwrap();
+        app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 0})).unwrap();
+        let part = app.run("anchor.create", json!({"name": "Part"})).unwrap()["id"].clone();
+        app.run("text.select", json!({"story": frame["story"], "anchor": 8, "focus": 8})).unwrap();
+        let section = app.run("anchor.create", json!({"name": "Section", "parent": part})).unwrap()["id"].clone();
+        app.run("bookmark.add", json!({"anchor": part})).unwrap();
+        app.run("bookmark.add", json!({"anchor": section})).unwrap();
+
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(320.0, 500.0))
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "en");
+            })
+            .build_ui_state(|ui, app| bookmarks(app, ui), app);
+        h.run_steps(3);
+        let part_rect = h.get_by_label("Part").rect();
+        let section_rect = h.get_by_label("Section").rect();
+        assert!(part_rect.left() < section_rect.left());
+        // Collapse hides child bookmark; Expand shows it again.
+        h.get_by_label("Collapse Part").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Section").is_none());
+        h.get_by_label("Expand Part").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Section").is_some());
+        // Deleting parent bookmark promotes child bookmark to top level.
+        h.get_all_by_label("Delete").next().unwrap().click();
+        h.run_steps(3);
+        let d = &h.state().session.doc().unwrap().doc;
+        assert_eq!(d.bookmarks.len(), 1);
+        assert_eq!(d.bookmarks[0].anchor, section.as_u64());
     }
 }
 

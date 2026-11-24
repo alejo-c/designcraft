@@ -170,6 +170,23 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             adopt_text(d, &mut slice, &source);
             let anchor_ids: Vec<_> =
                 slice.anchors.iter().map(|a| if moving && d.find_anchor(a.id).is_none() { a.id } else { (d.alloc() << 24) | 1 }).collect();
+            let old_to_new: std::collections::HashMap<u64, u64> =
+                slice.anchors.iter().zip(&anchor_ids).map(|(a, &new_id)| (a.id, new_id)).collect();
+            let anchor_parents: Vec<Option<u64>> = slice
+                .anchors
+                .iter()
+                .zip(&anchor_ids)
+                .map(|(a, &new_id)| {
+                    let p = a.parent?;
+                    if let Some(&mapped) = old_to_new.get(&p) {
+                        Some(mapped)
+                    } else if moving && new_id == a.id && d.find_anchor(p).is_some() {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             let slice_len = slice.text.len();
             let (end, r) = {
                 let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
@@ -178,15 +195,20 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                 st.delete(r.clone());
                 let end = st.insert_story(r.start, &slice);
                 let first = st.text.get(..r.start).map_or(0, |text| text.matches(designcraft_doc::ANCHOR_MARK).count());
-                for (k, id) in anchor_ids.iter().enumerate() {
+                for (k, (id, parent)) in anchor_ids.iter().zip(&anchor_parents).enumerate() {
                     if let Some(anchor) = st.anchors.get_mut(first + k) {
-                        Arc::make_mut(anchor).id = *id;
+                        let anchor = Arc::make_mut(anchor);
+                        anchor.id = *id;
+                        anchor.parent = *parent;
                     }
                 }
                 (end, r)
             };
             if t.cell.is_none() {
                 d.adjust_text_ranges(t.story, r, slice_len);
+                if !anchor_ids.is_empty() {
+                    d.sync_anchor_bookmarks();
+                }
             }
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             Ok(json!({"pos": end, "formatted": true}))

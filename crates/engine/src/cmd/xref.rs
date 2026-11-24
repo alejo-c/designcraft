@@ -22,13 +22,30 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Hyperlink Destination…",
             ["Type", "Hyperlinks & Cross-References"],
             None,
-            "{name} — a text anchor at the insertion point; the name is the document's, so it must not be one another anchor already has",
+            "{name, parent?: text anchor id or name or null} — a text anchor at the insertion point; the name is the document's, so it must not be one another anchor already has",
             in_story_text,
             create_anchor
         ),
         cmd!(query "xref.list", "Cross-References", [], None, "{} → [{story, pos, target, format, text}]", has_doc, list),
-        cmd!(query "anchor.list", "Text Anchors", [], None, "{} → [{id, name, story, pos, page}]", has_doc, list_anchors),
-        cmd!("anchor.rename", "Rename Text Anchor", [], None, "{id, name}", has_doc, rename_anchor),
+        cmd!(query "anchor.list", "Text Anchors", [], None, "{} → [{id, name, parent, story, pos, page}]", has_doc, list_anchors),
+        cmd!(
+            "anchor.rename",
+            "Rename Text Anchor",
+            [],
+            None,
+            "{id, name, parent?: text anchor id or name or null}",
+            has_doc,
+            rename_anchor
+        ),
+        cmd!(
+            "anchor.setParent",
+            "Move Text Anchor",
+            [],
+            None,
+            "{id, parent?: text anchor id or name or null} — moves a text anchor under another text anchor, or to the top level when parent is null/omitted",
+            has_doc,
+            set_anchor_parent
+        ),
         cmd!(
             "anchor.delete",
             "Delete Text Anchor",
@@ -122,6 +139,31 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+fn resolve_parent_param(cmd_id: &str, d: &designcraft_doc::Document, p: &Value) -> Result<Option<u64>> {
+    let Some(v) = p.get("parent").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let anchors = || d.stories.values().flat_map(|st| st.anchors.iter());
+    if let Some(n) = v.as_u64() {
+        return match anchors().any(|x| x.id == n) {
+            true => Ok(Some(n)),
+            false => Err(bad(cmd_id, format!("no text anchor {v} (anchor.list names them)"))),
+        };
+    }
+    let Some(name) = v.as_str() else {
+        return Err(bad(cmd_id, format!("no text anchor {v} (anchor.list names them)")));
+    };
+    let mut named = anchors().filter(|x| x.name == name);
+    match (named.next(), named.next()) {
+        (Some(x), None) => Ok(Some(x.id)),
+        (Some(_), Some(_)) => {
+            let ids: Vec<String> = anchors().filter(|x| x.name == name).map(|x| x.id.to_string()).collect();
+            Err(bad(cmd_id, format!("more than one text anchor is named {name:?} ({}); give the id instead", ids.join(", "))))
+        }
+        (None, _) => Err(bad(cmd_id, format!("no text anchor {v} (anchor.list names them)"))),
+    }
+}
+
 fn create_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("anchor.create", "missing name"))?.to_string();
     if name.trim().is_empty() {
@@ -132,11 +174,17 @@ fn create_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     if s.doc()?.doc.stories.values().any(|st| st.anchors.iter().any(|a| a.name == name)) {
         return Err(bad("anchor.create", format!("a text anchor named `{name}` is already in this document (anchor.list names them)")));
     }
+    let parent = resolve_parent_param("anchor.create", &s.doc()?.doc, p)?;
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("anchor.create", "no insertion point"))?;
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
         let at = t.range().start.min(st.len());
         let id = st.insert_anchor(at, &name);
+        if let Some(parent_id) = parent
+            && let Some(a) = st.anchors.iter_mut().find(|a| a.id == id)
+        {
+            std::sync::Arc::make_mut(a).parent = Some(parent_id);
+        }
         if t.cell.is_none() {
             d.adjust_text_ranges(t.story, at..at, designcraft_doc::ANCHOR_MARK.len_utf8());
         }
@@ -149,15 +197,48 @@ fn create_anchor(s: &mut Session, p: &Value) -> Result<Value> {
 fn rename_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let id = p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("anchor.rename", "missing id"))?;
     let name = str_param(p, "name").filter(|n| !n.trim().is_empty()).ok_or_else(|| bad("anchor.rename", "missing name"))?;
+    let update_parent = p.get("parent").is_some();
+    let parent = if update_parent { resolve_parent_param("anchor.rename", &s.doc()?.doc, p)? } else { None };
     s.edit(|d, _| {
         if d.stories.values().any(|st| st.anchors.iter().any(|a| a.id != id && a.name == name)) {
             return Err(bad("anchor.rename", "a text anchor already has that name"));
         }
+        if let Some(parent_id) = parent
+            && d.anchor_parent_creates_cycle(id, parent_id)
+        {
+            return Err(bad("anchor.rename", "cannot move a text anchor under itself or one of its descendants"));
+        }
         let (sid, _) = d.find_anchor(id).ok_or_else(|| bad("anchor.rename", "no such text anchor"))?;
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let a = st.anchors.iter_mut().find(|a| a.id == id).ok_or_else(|| bad("anchor.rename", "no such text anchor"))?;
-        std::sync::Arc::make_mut(a).name = name.to_string();
+        let a = std::sync::Arc::make_mut(a);
+        a.name = name.to_string();
+        if update_parent {
+            a.parent = parent;
+        }
         st.rev = st.rev.wrapping_add(1);
+        if update_parent {
+            d.sync_anchor_bookmarks();
+        }
+        Ok(Value::Null)
+    })
+}
+
+fn set_anchor_parent(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("anchor.setParent", "missing id"))?;
+    let parent = resolve_parent_param("anchor.setParent", &s.doc()?.doc, p)?;
+    s.edit(|d, _| {
+        if let Some(parent_id) = parent
+            && d.anchor_parent_creates_cycle(id, parent_id)
+        {
+            return Err(bad("anchor.setParent", "cannot move a text anchor under itself or one of its descendants"));
+        }
+        let (sid, _) = d.find_anchor(id).ok_or_else(|| bad("anchor.setParent", "no such text anchor"))?;
+        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+        let a = st.anchors.iter_mut().find(|a| a.id == id).ok_or_else(|| bad("anchor.setParent", "no such text anchor"))?;
+        std::sync::Arc::make_mut(a).parent = parent;
+        st.rev = st.rev.wrapping_add(1);
+        d.sync_anchor_bookmarks();
         Ok(Value::Null)
     })
 }
@@ -172,10 +253,27 @@ fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         {
             return Err(bad("anchor.delete", "remove bookmarks, hyperlinks and cross-references to this text anchor first"));
         }
+        let old_parent = d.anchor(id).and_then(|a| a.parent);
         let (sid, pos) = d.find_anchor(id).ok_or_else(|| bad("anchor.delete", "no such text anchor"))?;
         let end = pos.saturating_add(designcraft_doc::ANCHOR_MARK.len_utf8());
         d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.delete(pos..end);
         d.adjust_text_ranges(sid, pos..end, 0);
+        // Promote direct child anchors so they keep their place in the tree.
+        let sids: Vec<_> = d.stories.keys().copied().collect();
+        for other_sid in sids {
+            if let Some(st) = d.story_mut(other_sid) {
+                let mut changed = false;
+                for a in &mut st.anchors {
+                    if a.parent == Some(id) {
+                        std::sync::Arc::make_mut(a).parent = old_parent;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    st.rev = st.rev.wrapping_add(1);
+                }
+            }
+        }
         if remove_bookmarks {
             let mut pending = vec![&mut d.bookmarks];
             while let Some(bookmarks) = pending.pop() {
@@ -190,6 +288,7 @@ fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 pending.extend(bookmarks.iter_mut().map(|b| &mut b.children));
             }
+            d.sync_anchor_bookmarks();
         }
         if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell.is_none()) {
             let repair = |at: usize| if at > pos { at.saturating_sub(end - pos).max(pos) } else { at };
@@ -233,7 +332,14 @@ fn list_anchors(s: &mut Session, _: &Value) -> Result<Value> {
             let pos = st.anchor_pos(a.id);
             let place = pos.and_then(|pos| designcraft_compose::xref::anchor_place(&d, &cs, pos));
             let (page, x, y) = place.map_or((usize::MAX, f64::INFINITY, f64::INFINITY), |place| (place.page, place.point.x, place.point.y));
-            let value = json!({"id": a.id, "name": a.name, "story": st.id.0, "pos": pos, "page": place.map(|place| d.page_name(place.page))});
+            let value = json!({
+                "id": a.id,
+                "name": a.name,
+                "parent": d.effective_anchor_parent(a.id),
+                "story": st.id.0,
+                "pos": pos,
+                "page": place.map(|place| d.page_name(place.page))
+            });
             out.push(((page, x, y, st.id, pos, a.id), value));
         }
     }
@@ -614,5 +720,74 @@ mod tests {
         // A mark over the first character does not shorten the link to that character.
         let marked = width(true);
         assert!((marked - plain).abs() < 1.0, "the link still covers its words: {marked} vs {plain}");
+    }
+
+    #[test]
+    fn text_anchors_form_a_tree_with_cycle_protection_and_bookmark_sync() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [36, 36, 400, 400], "content": "text", "text": "Part\nChapter\nSection\nOther"})).unwrap();
+        let story = f["story"].clone();
+        let mk = |s: &mut Session, at: usize, name: &str, parent: Value| -> u64 {
+            s.execute("text.select", &json!({"story": story, "anchor": at, "focus": at})).unwrap();
+            let mut params = json!({"name": name});
+            if !parent.is_null() {
+                params["parent"] = parent;
+            }
+            s.execute("anchor.create", &params).unwrap()["id"].as_u64().unwrap()
+        };
+        let part = mk(&mut s, 0, "Part", Value::Null);
+        let chapter = mk(&mut s, 8, "Chapter", json!(part));
+        let section = mk(&mut s, 19, "Section", json!("Chapter"));
+        let other = mk(&mut s, 30, "Other", Value::Null);
+
+        // Cycle protection: cannot move Part under itself or its descendant Section.
+        assert!(s.execute("anchor.setParent", &json!({"id": part, "parent": part})).is_err());
+        assert!(s.execute("anchor.setParent", &json!({"id": part, "parent": section})).is_err());
+
+        // Bookmark Section first, then Part (skipping Chapter): Section nests under Part.
+        s.execute("bookmark.add", &json!({"anchor": section})).unwrap();
+        s.execute("bookmark.add", &json!({"anchor": part})).unwrap();
+        let bm = s.execute("bookmark.list", &json!({})).unwrap();
+        assert_eq!(bm.as_array().unwrap().len(), 1);
+        assert_eq!(bm[0]["name"], "Part");
+        assert_eq!(bm[0]["children"][0]["name"], "Section");
+
+        // Bookmark Chapter: Section automatically nests under Chapter under Part.
+        s.execute("bookmark.add", &json!({"anchor": chapter})).unwrap();
+        let bm = s.execute("bookmark.list", &json!({})).unwrap();
+        assert_eq!(bm[0]["children"][0]["name"], "Chapter");
+        assert_eq!(bm[0]["children"][0]["children"][0]["name"], "Section");
+
+        // Unbookmark Chapter by anchor id: Section promotes back under Part.
+        s.execute("bookmark.delete", &json!({"anchor": chapter})).unwrap();
+        let bm = s.execute("bookmark.list", &json!({})).unwrap();
+        assert_eq!(bm[0]["children"][0]["name"], "Section");
+
+        // Move Chapter (non-bookmarked) under bookmarked Other: Section follows Chapter under Other.
+        s.execute("bookmark.add", &json!({"anchor": other})).unwrap();
+        s.execute("anchor.setParent", &json!({"id": chapter, "parent": other})).unwrap();
+        let bm = s.execute("bookmark.list", &json!({})).unwrap();
+        assert!(bm[0]["children"].as_array().unwrap().is_empty());
+        assert_eq!(bm[1]["name"], "Other");
+        assert_eq!(bm[1]["children"][0]["name"], "Section");
+
+        // Delete Chapter (with removeBookmarks): Section promotes to Other in the anchor tree too.
+        s.execute("anchor.delete", &json!({"id": chapter, "removeBookmarks": true})).unwrap();
+        let anchors = s.execute("anchor.list", &json!({})).unwrap();
+        let sec_entry = anchors.as_array().unwrap().iter().find(|a| a["id"] == section).unwrap();
+        assert_eq!(sec_entry["parent"], other);
+
+        // Undo restores Chapter and Section's parent link atomically.
+        s.execute("edit.undo", &json!({})).unwrap();
+        let anchors = s.execute("anchor.list", &json!({})).unwrap();
+        let sec_entry = anchors.as_array().unwrap().iter().find(|a| a["id"] == section).unwrap();
+        assert_eq!(sec_entry["parent"], chapter);
+
+        // Native save/load preserves TextAnchor::parent.
+        let bytes = designcraft_format::save(&s.doc().unwrap().doc).unwrap();
+        let back = designcraft_format::load(&bytes).unwrap();
+        assert_eq!(back.anchor(section).unwrap().parent, Some(chapter));
+        assert_eq!(back.anchor(chapter).unwrap().parent, Some(other));
     }
 }

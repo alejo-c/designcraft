@@ -136,7 +136,7 @@ impl Story {
         for (k, a) in src.anchors.iter().enumerate() {
             if let Some(slot) = self.anchors.get_mut(na + k) {
                 let id = slot.id;
-                *slot = Arc::new(crate::xref::TextAnchor { id, name: a.name.clone() });
+                *slot = Arc::new(crate::xref::TextAnchor { id, name: a.name.clone(), parent: None });
             }
         }
         // Tables: re-attach at their anchors (fresh ids so a pasted copy never shares an id).

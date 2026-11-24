@@ -4187,18 +4187,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     STEP_AND_REPEAT => step_and_repeat_dialog(app, ui, &mut d),
                     CORNER_OPTIONS => corner_options_dialog(app, ui, &mut d),
                     TOC => toc_dialog(app, ui, &mut d),
-                    "textAnchor" => {
-                        let mut name = d.s("name");
-                        let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
-                        let response = ui.add(egui::TextEdit::singleline(&mut name).desired_width(ui.available_width())).labelled_by(label.id);
-                        if d.fields.remove("focusName").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            response.request_focus();
-                        }
-                        d.fields.insert("name".into(), json!(name));
-                        if let Some(error) = d.fields.get("status").and_then(Value::as_str) {
-                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, error));
-                        }
-                    }
+                    "textAnchor" => text_anchor_dialog(app, ui, &mut d),
                     id if id.starts_with("cmd:") => command_form(app, ui, &mut d),
                     "insertPages" => insert_pages_dialog(app, ui, &mut d),
                     "goToPage" => {
@@ -4936,6 +4925,56 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     confirm_part1(app, d)
 }
 
+fn text_anchor_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let mut name = d.s("name");
+    let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
+    let response = ui.add(egui::TextEdit::singleline(&mut name).desired_width(ui.available_width())).labelled_by(label.id);
+    if d.fields.remove("focusName").and_then(|v| v.as_bool()).unwrap_or(false) {
+        response.request_focus();
+    }
+    d.fields.insert("name".into(), json!(name));
+    let anchors = app.session.execute("anchor.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let forbidden = d
+        .fields
+        .get("id")
+        .and_then(Value::as_u64)
+        .map(|id| crate::panels::interactive::anchor_subtree_ids(&anchors, id))
+        .unwrap_or_default();
+    let mut parent = d
+        .fields
+        .get("parent")
+        .and_then(Value::as_u64)
+        .filter(|p| !forbidden.contains(p) && anchors.iter().any(|a| a["id"].as_u64() == Some(*p)));
+    let parent_label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Parent"));
+    let selected_text = parent
+        .and_then(|pid| anchors.iter().find(|a| a["id"].as_u64() == Some(pid)).and_then(|a| a["name"].as_str()))
+        .unwrap_or_else(|| crate::i18n::tr(&app.ui.language, "[No Parent]"));
+    craft_ui::ComboBox::from_id_salt("text_anchor_parent")
+        .selected_text(selected_text)
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(parent.is_none(), crate::i18n::tr(&app.ui.language, "[No Parent]")).clicked() {
+                parent = None;
+            }
+            for row in crate::panels::interactive::anchor_tree_rows(&anchors) {
+                if forbidden.contains(&row.id) {
+                    continue;
+                }
+                let cand_name = anchors[row.index]["name"].as_str().unwrap_or("");
+                let row_label = if row.depth == 0 { cand_name.to_string() } else { format!("{}{cand_name}", "  ".repeat(row.depth)) };
+                if ui.selectable_label(parent == Some(row.id), row_label).clicked() {
+                    parent = Some(row.id);
+                }
+            }
+        })
+        .response
+        .labelled_by(parent_label.id);
+    d.fields.insert("parent".into(), parent.map_or(Value::Null, |p| json!(p)));
+    if let Some(error) = d.fields.get("status").and_then(Value::as_str) {
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, error));
+    }
+}
+
 /// One slice of the dialogs' Apply; later slices take the ids this one doesn't.
 fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
     match d.id.as_str() {
@@ -4944,12 +4983,13 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 if app.session.active().map(|st| st.uid) != d.fields.get("uid").and_then(Value::as_u64) {
                     return Err("The active document has changed".into());
                 }
+                let parent = d.fields.get("parent").cloned().unwrap_or(Value::Null);
                 if let Some(id) = d.fields.get("id") {
-                    app.run("anchor.rename", json!({"id": id, "name": d.s("name")}))
+                    app.run("anchor.rename", json!({"id": id, "name": d.s("name"), "parent": parent}))
                 } else {
                     let selection = d.fields.get("selection").ok_or("No text selection")?;
                     app.run("text.select", json!({"story": selection["story"], "anchor": selection["anchor"], "focus": selection["focus"]}))?;
-                    app.run("anchor.create", json!({"name": d.s("name")}))
+                    app.run("anchor.create", json!({"name": d.s("name"), "parent": parent}))
                 }
             })();
             if let Err(error) = &result {
