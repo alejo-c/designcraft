@@ -266,6 +266,41 @@ fn escape_toggles_text_and_cell_selection() {
     assert!(s.execute("table.toggleSelection", &json!({})).is_err());
 }
 
+/// Esc with the caret or cell selection inside a table switches to the Selection tool and selects
+/// the text frame, matching regular text frames.
+#[test]
+fn escape_in_table_switches_to_selection_tool() {
+    let (mut s, sid, fid) = session_with_frame();
+    s.set_tool("type");
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    assert_eq!(s.tool_id(), "type");
+    assert!(s.wants_text());
+    assert!(s.doc().unwrap().selection.text.and_then(|t| t.cell).is_some());
+
+    let view = crate::ViewInfo::at_zoom(1.0);
+    assert!(s.tool_key(designcraft_tools::ToolKey::Escape, designcraft_tools::Mods::default(), view).unwrap());
+    assert_eq!(s.tool_id(), "selection");
+    assert!(!s.wants_text());
+    let sel = &s.doc().unwrap().selection;
+    assert!(sel.text.is_none());
+    assert!(sel.cells.is_none());
+    assert_eq!(sel.items, vec![doc::ItemId(fid)]);
+    assert!(s.execute("text.insert", &json!({"text": "x"})).is_err());
+    assert!(s.execute("text.move", &json!({"dir": "right"})).is_err());
+
+    // Selecting table cells and pressing Esc also switches to the Selection tool and selects the frame.
+    s.set_tool("type");
+    s.execute("table.select", &json!({"story": sid, "table": tid, "rows": [0, 0], "cols": [0, 1]})).unwrap();
+    assert!(s.doc().unwrap().selection.cells.is_some());
+    assert!(s.tool_key(designcraft_tools::ToolKey::Escape, designcraft_tools::Mods::default(), view).unwrap());
+    assert_eq!(s.tool_id(), "selection");
+    assert!(!s.wants_text());
+    let sel = &s.doc().unwrap().selection;
+    assert!(sel.text.is_none());
+    assert!(sel.cells.is_none());
+    assert_eq!(sel.items, vec![doc::ItemId(fid)]);
+}
+
 fn selected_merged_table(column: bool) -> (Session, u64, u64, u64) {
     let (mut s, sid, fid) = session_with_frame();
     let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();

@@ -407,8 +407,6 @@ impl Tool for TypeTool {
             // In a table cell Shift+Tab goes back a cell (Tab goes on through `text.insert`).
             ToolKey::Tab if mods.shift && in_cell => vec![Action::Exec("table.prevCell".into(), json!({}))],
             ToolKey::Tab => vec![Action::Exec("text.insert".into(), json!({"text": "\t"}))],
-            // In a table Esc toggles between the cell's text and the cell, as InDesign.
-            ToolKey::Escape if in_cell => vec![Action::Exec("table.toggleSelection".into(), json!({}))],
             ToolKey::Escape => vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), json!({}))],
             _ => vec![],
         }

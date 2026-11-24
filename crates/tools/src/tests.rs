@@ -1677,8 +1677,8 @@ fn table_frame(degrees: f64) -> (Document, ItemId) {
     (d, id)
 }
 
-/// In a table cell Shift+Tab goes back a cell and Esc toggles cell selection, as InDesign; out of
-/// a table Tab types a tab and Esc leaves the text.
+/// In a table cell Shift+Tab goes back a cell; Esc leaves text editing for the Selection tool both
+/// inside and outside a table (and with cells selected). Out of a table Tab types a tab.
 #[test]
 fn type_tool_keys_in_a_table_cell() {
     let (d, id) = table_frame(0.0);
@@ -1691,15 +1691,24 @@ fn type_tool_keys_in_a_table_cell() {
     let mut t = create("type");
     let shift = Mods { shift: true, ..Default::default() };
     let exec = |c: &str, p: serde_json::Value| vec![Action::Exec(c.into(), p)];
+    let exit_to_selection = vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), serde_json::json!({}))];
     assert_eq!(t.key(&cx, ToolKey::Tab, shift), exec("table.prevCell", serde_json::json!({})));
     assert_eq!(t.key(&cx, ToolKey::Tab, Mods::default()), exec("text.insert", serde_json::json!({"text": "\t"})));
-    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), exec("table.toggleSelection", serde_json::json!({})));
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), exit_to_selection);
+    // With table cells selected, Esc also exits to the Selection tool.
+    let s_cells = Selection {
+        cells: Some(designcraft_doc::TableSel { story: sid, table, range: designcraft_doc::CellRange::cell(1, 1) }),
+        text: Some(designcraft_doc::TextSel { cell: Some(cell), ..designcraft_doc::TextSel::caret(sid, 0) }),
+        ..Default::default()
+    };
+    let cx_cells = ctx(&d, &s_cells, &c, &l);
+    assert_eq!(t.key(&cx_cells, ToolKey::Escape, Mods::default()), exit_to_selection);
     // Out of a table, and in footnote text (addressed as a cell too).
     for cell in [None, Some(designcraft_doc::CellAddr::footnote(1))] {
         let s = Selection::text(designcraft_doc::TextSel { cell, ..designcraft_doc::TextSel::caret(sid, 0) });
         let cx = ctx(&d, &s, &c, &l);
         assert_eq!(t.key(&cx, ToolKey::Tab, shift), exec("text.insert", serde_json::json!({"text": "\t"})), "{cell:?}");
-        assert!(matches!(t.key(&cx, ToolKey::Escape, Mods::default()).first(), Some(Action::SwitchTool(_))), "{cell:?}");
+        assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), exit_to_selection, "{cell:?}");
     }
 }
 

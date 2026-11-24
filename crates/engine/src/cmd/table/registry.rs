@@ -421,7 +421,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Toggle Text and Cell Selection",
             [],
             None,
-            "{} — Esc in a table, as InDesign: the insertion point or text in a cell selects that cell; selected cells select the text of the first one",
+            "{} — toggle between cell text and cell selection: the insertion point or text in a cell selects that cell; selected cells select the text of the first one",
             in_cell,
             |s, _| toggle_selection(s)
         ),

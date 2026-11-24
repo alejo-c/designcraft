@@ -179,8 +179,8 @@ pub(crate) fn one_selected_cell_to_text(s: &mut Session) -> Result<()> {
     Ok(())
 }
 
-/// Esc in a table: text in a cell becomes that cell's selection, and selected cells the text of
-/// the first one (InDesign toggles between the two).
+/// Toggle between text and cell selection in a table: text in a cell becomes that cell's
+/// selection, and selected cells become the text of the first one.
 pub(super) fn toggle_selection(s: &mut Session) -> Result<Value> {
     const ID: &str = "table.toggleSelection";
     let st = s.doc_mut()?;
