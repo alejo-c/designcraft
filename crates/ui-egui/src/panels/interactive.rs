@@ -6,40 +6,135 @@ use crate::DesignApp;
 use crate::app::file_dialogs::Bound;
 use crate::theme::Tokens;
 
-fn dest_text(lang: &str, d: &Value) -> String {
-    if let Some(u) = d.get("url").and_then(Value::as_str) {
-        return u.to_string();
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum HyperlinkKind {
+    #[default]
+    Url,
+    Email,
+    Page,
+}
+
+impl HyperlinkKind {
+    const ALL: [Self; 3] = [Self::Url, Self::Email, Self::Page];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Url => "URL",
+            Self::Email => "Email",
+            Self::Page => "Page",
+        }
     }
-    if let Some(e) = d.get("email").and_then(Value::as_str) {
-        return format!("mailto:{e}");
+}
+
+#[derive(Clone, Debug, Default)]
+struct HyperlinkPanelState {
+    kind: HyperlinkKind,
+    url: String,
+    email: String,
+    page: usize,
+}
+
+fn normalize_email(input: &str) -> &str {
+    let trimmed = input.trim();
+    if trimmed.as_bytes().get(..7).is_some_and(|p| p.eq_ignore_ascii_case(b"mailto:")) {
+        trimmed[7..].trim_start()
+    } else {
+        trimmed
     }
-    if let Some(p) = d.get("page").and_then(Value::as_u64) {
-        return format!("{} {}", crate::i18n::tr(lang, "Page"), p + 1);
+}
+
+fn dest_text(app: &DesignApp, d: &Value) -> String {
+    let lang = &app.ui.language;
+    match d["kind"].as_str() {
+        Some("url") => d["value"].as_str().unwrap_or("").to_string(),
+        Some("email") => format!("mailto:{}", d["value"].as_str().unwrap_or("")),
+        Some("page") => {
+            let page = d["value"].as_u64().unwrap_or(0) as usize;
+            format!("{} {}", crate::i18n::tr(lang, "Page"), app.session.page_label(page))
+        }
+        Some("anchor") => {
+            let id = d["value"].as_u64().unwrap_or(0);
+            app.session
+                .active()
+                .and_then(|st| st.doc.stories.values().flat_map(|s| s.anchors.iter()).find(|a| a.id == id))
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| format!("Anchor {id}"))
+        }
+        _ => d.to_string(),
     }
-    d.to_string()
 }
 
 pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let id = egui::Id::unique("new_hyperlink_url");
-    let mut url: String = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| "https://".into());
+    let lang = app.ui.language.clone();
+    let doc_uid = app.session.active().map(|d| d.uid);
+    let state_id = egui::Id::unique(("hyperlink_panel_state", doc_uid));
+    let mut state: HyperlinkPanelState = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
+    let page_count = app.session.active().map_or(0, |d| d.doc.page_count());
+    let pages: Vec<String> = (0..page_count).map(|i| app.session.page_label(i)).collect();
+    state.page = state.page.min(pages.len().saturating_sub(1));
     let has_target = app.session.active().is_some_and(|d| d.selection.text.is_some_and(|t| !t.is_caret()) || !d.selection.items.is_empty());
+
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut url).desired_width(170.0));
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Link To"));
+        let combo = craft_ui::ComboBox::from_id_salt(state_id.with("kind"))
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, state.kind.label())))
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for kind in HyperlinkKind::ALL {
+                    ui.selectable_value(&mut state.kind, kind, crate::rtl::widget(ui, crate::i18n::tr(&lang, kind.label())));
+                }
+            });
+        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&lang, "Link To"));
+    });
+
+    ui.horizontal(|ui| {
+        match state.kind {
+            HyperlinkKind::Url => {
+                ui.add(egui::TextEdit::singleline(&mut state.url).hint_text("https://").desired_width(170.0))
+                    .accessible_name(crate::i18n::tr(&lang, "URL").to_owned());
+            }
+            HyperlinkKind::Email => {
+                ui.add(egui::TextEdit::singleline(&mut state.email).desired_width(170.0))
+                    .accessible_name(crate::i18n::tr(&lang, "Email").to_owned());
+            }
+            HyperlinkKind::Page => {
+                let selected_text = pages.get(state.page).cloned().unwrap_or_default();
+                let combo = craft_ui::ComboBox::from_id_salt(state_id.with("page"))
+                    .selected_text(selected_text)
+                    .width(170.0)
+                    .show_ui(ui, |ui| {
+                        for (i, label) in pages.iter().enumerate() {
+                            ui.selectable_value(&mut state.page, i, label);
+                        }
+                    });
+                let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&lang, "Page"));
+            }
+        }
+        let can_create = has_target
+            && match state.kind {
+                HyperlinkKind::Url => !state.url.trim().is_empty(),
+                HyperlinkKind::Email => !normalize_email(&state.email).is_empty(),
+                HyperlinkKind::Page => !pages.is_empty(),
+            };
         if ui
-            .add_enabled(has_target, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New"))))
+            .add_enabled(can_create, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, "New"))))
             .on_hover_ui(|ui| {
-                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Hyperlink from the selected text or frames"));
+                crate::rtl::label(ui, crate::i18n::tr(&lang, "Hyperlink from the selected text or frames"));
             })
             .clicked()
         {
-            let p = if let Some(m) = url.strip_prefix("mailto:") { json!({"email": m}) } else { json!({"url": url}) };
+            let p = match state.kind {
+                HyperlinkKind::Url => json!({"url": state.url.trim()}),
+                HyperlinkKind::Email => json!({"email": normalize_email(&state.email)}),
+                HyperlinkKind::Page => json!({"page": state.page + 1}),
+            };
             if let Err(e) = app.run("hyperlink.create", p) {
                 app.status_error("Hyperlinks", e);
             }
         }
     });
-    ui.data_mut(|d| d.insert_temp(id, url));
+    ui.data_mut(|d| d.insert_temp(state_id, state));
     ui.separator();
     let list = app.session.execute("hyperlink.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     if list.is_empty() {
@@ -47,7 +142,7 @@ pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui,
             crate::rtl::widget(
                 ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "No hyperlinks. Select text or a frame, type a URL and click New."))
+                egui::RichText::new(crate::i18n::tr(&lang, "No hyperlinks. Select text or a frame, choose a destination and click New."))
                     .size(11.0)
                     .color(t.text_dim),
             ),
@@ -56,12 +151,12 @@ pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
     for h in list {
         let hid = h["id"].clone();
         ui.horizontal(|ui| {
-            let r = ui.selectable_label(false, h["name"].as_str().unwrap_or("")).on_hover_text(dest_text(&app.ui.language, &h["dest"]));
+            let r = ui.selectable_label(false, h["name"].as_str().unwrap_or("")).on_hover_text(dest_text(app, &h["dest"]));
             if r.clicked() {
                 let _ = app.run("hyperlink.goToSource", json!({"id": hid}));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete"))).clicked() {
+                if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Delete"))).clicked() {
                     let _ = app.run("hyperlink.delete", json!({"id": hid}));
                 }
             });
@@ -826,5 +921,126 @@ mod liquid_panel_tests {
         let v = l(&h).unwrap();
         assert!(v.pin_right && !v.resize_width && v.resize_height, "{v:?}");
         let _ = h.get_by_label("Auto-Fit");
+    }
+}
+
+#[cfg(test)]
+mod hyperlink_panel_tests {
+    use designcraft_doc::HyperlinkDest;
+    use egui::accesskit::Role;
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    use serde_json::json;
+
+    use super::*;
+
+    fn harness(pages: usize) -> Harness<'static, DesignApp> {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": pages})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 240, 160]})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(320.0, 420.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                hyperlinks(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h
+    }
+
+    #[test]
+    fn url_mode_uses_https_placeholder_and_creates_url_hyperlink() {
+        let mut h = harness(1);
+        let input = h.get_by_role_and_label(Role::TextInput, "URL");
+        assert_eq!(input.accesskit_node().placeholder(), Some("https://"));
+        assert!(input.value().unwrap_or_default().is_empty());
+
+        // New is disabled while the URL field is empty.
+        assert!(h.get_by_label("New").accesskit_node().is_disabled());
+        h.get_by_label("New").click();
+        h.run_steps(2);
+        assert!(h.state().session.doc().unwrap().doc.hyperlinks.is_empty());
+
+        h.get_by_role_and_label(Role::TextInput, "URL").click();
+        h.run_steps(1);
+        h.event(egui::Event::Text("https://example.com".into()));
+        h.run_steps(2);
+        assert!(!h.get_by_label("New").accesskit_node().is_disabled());
+        h.get_by_label("New").click();
+        h.run_steps(2);
+
+        let links = &h.state().session.doc().unwrap().doc.hyperlinks;
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].dest, HyperlinkDest::Url("https://example.com".into()));
+        let dest_json = serde_json::to_value(&links[0].dest).unwrap();
+        assert_eq!(dest_text(h.state(), &dest_json), "https://example.com");
+    }
+
+    #[test]
+    fn email_mode_has_no_placeholder_and_creates_email_hyperlink_with_mailto() {
+        let mut h = harness(1);
+        h.get_by_role_and_label(Role::ComboBox, "Link To").click();
+        h.run_steps(2);
+        h.get_by_label("Email").click();
+        h.run_steps(2);
+
+        let input = h.get_by_role_and_label(Role::TextInput, "Email");
+        assert!(input.accesskit_node().placeholder().is_none_or(str::is_empty));
+        assert!(input.value().unwrap_or_default().is_empty());
+        assert!(h.get_by_label("New").accesskit_node().is_disabled());
+
+        h.get_by_role_and_label(Role::TextInput, "Email").click();
+        h.run_steps(1);
+        h.event(egui::Event::Text("alice@example.com".into()));
+        h.run_steps(2);
+        assert!(!h.get_by_label("New").accesskit_node().is_disabled());
+        h.get_by_label("New").click();
+        h.run_steps(2);
+
+        let links = &h.state().session.doc().unwrap().doc.hyperlinks;
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].dest, HyperlinkDest::Email("alice@example.com".into()));
+        let dest_json = serde_json::to_value(&links[0].dest).unwrap();
+        assert_eq!(dest_text(h.state(), &dest_json), "mailto:alice@example.com");
+    }
+
+    #[test]
+    fn page_mode_uses_page_select_instead_of_text_input() {
+        let mut h = harness(3);
+        h.get_by_role_and_label(Role::ComboBox, "Link To").click();
+        h.run_steps(2);
+        h.get_by_label("Page").click();
+        h.run_steps(2);
+
+        assert!(h.query_by_role(Role::TextInput).is_none());
+        h.get_by_role_and_label(Role::ComboBox, "Page").click();
+        h.run_steps(2);
+        h.get_by_label("2").click();
+        h.run_steps(2);
+        h.get_by_label("New").click();
+        h.run_steps(2);
+
+        let links = &h.state().session.doc().unwrap().doc.hyperlinks;
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].dest, HyperlinkDest::Page(1));
+        let dest_json = serde_json::to_value(&links[0].dest).unwrap();
+        assert_eq!(dest_text(h.state(), &dest_json), "Page 2");
+
+        // Deleting pages clamps the selected page index instead of panicking or pointing out of bounds.
+        h.state_mut().run("layout.pages.delete", json!({"pages": [1, 2]})).unwrap();
+        h.run_steps(2);
+        h.get_by_label("New").click();
+        h.run_steps(2);
+        let links = &h.state().session.doc().unwrap().doc.hyperlinks;
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[1].dest, HyperlinkDest::Page(0));
     }
 }

@@ -91,6 +91,15 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+fn strip_mailto(s: &str) -> &str {
+    let trimmed = s.trim();
+    if trimmed.as_bytes().get(..7).is_some_and(|p| p.eq_ignore_ascii_case(b"mailto:")) {
+        trimmed[7..].trim_start()
+    } else {
+        trimmed
+    }
+}
+
 /// `url`, `email`, `page` (1-based) or `anchor` (a text anchor's id, or its name).
 ///
 /// `None` is "no destination given", which `hyperlink.edit` needs for an edit that only renames.
@@ -107,7 +116,11 @@ fn dest_param(id: &str, d: &designcraft_doc::Document, p: &Value) -> Result<Opti
         return Ok(Some(HyperlinkDest::Url(u.to_string())));
     }
     if let Some(e) = str_param(p, "email") {
-        return Ok(Some(HyperlinkDest::Email(e.to_string())));
+        let addr = strip_mailto(e);
+        if !designcraft_doc::is_safe_link_url(&format!("mailto:{addr}")) {
+            return Err(bad(id, "`email` must be a non-empty address with no whitespace"));
+        }
+        return Ok(Some(HyperlinkDest::Email(addr.to_string())));
     }
     if let Some(a) = p.get("anchor").filter(|a| !a.is_null()) {
         let anchors = || d.stories.values().flat_map(|st| st.anchors.iter());
@@ -210,6 +223,21 @@ mod panel_tests {
         }
         s.execute("hyperlink.create", &json!({"ids": [id.clone()], "url": "mailto:info@example.com"})).unwrap();
         s.execute("hyperlink.create", &json!({"ids": [id], "url": "https://example.com"})).unwrap();
+    }
+
+    #[test]
+    fn hyperlinks_normalize_and_validate_email_destinations() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [72, 72, 200, 120]})).unwrap()["id"].clone();
+        for bad in ["", "   ", "mailto:", "alice bob@example.com"] {
+            s.execute("hyperlink.create", &json!({"ids": [id.clone()], "email": bad})).expect_err("refused");
+        }
+        s.execute("hyperlink.create", &json!({"ids": [id.clone()], "email": "alice@example.com"})).unwrap();
+        s.execute("hyperlink.create", &json!({"ids": [id], "email": "MAILTO:bob@example.com"})).unwrap();
+        let list = s.execute("hyperlink.list", &json!({})).unwrap();
+        assert_eq!(list[0]["dest"], json!({"kind": "email", "value": "alice@example.com"}));
+        assert_eq!(list[1]["dest"], json!({"kind": "email", "value": "bob@example.com"}));
     }
 }
 
