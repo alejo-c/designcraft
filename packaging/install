@@ -1,1 +1,1 @@
-cargo b -r -p designcraft --locked && cp ./target/release/designcraft ~/.local/share/cargo/bin/
+cargo install --path ./apps/designcraft --locked --force
