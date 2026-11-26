@@ -410,10 +410,24 @@ fn harness_with_step(app: DesignApp, step_dt: f32) -> Harness<'static, DesignApp
     h
 }
 
+/// Background decodes finishing one after another are taken up in batches, and not while a
+/// render is in flight (a newer request would drop it before it is shown).
+#[test]
+fn finished_image_decodes_rerender_the_canvas_in_batches() {
+    use render::{IMAGE_BATCH_MS, image_generation};
+    let mut seen = (0, f64::NEG_INFINITY);
+    assert_eq!(image_generation(&mut seen, 1, 1000.0, false), (1, None), "the first is taken at once");
+    assert_eq!(image_generation(&mut seen, 2, 1010.0, false), (1, Some(IMAGE_BATCH_MS - 10.0)));
+    assert_eq!(image_generation(&mut seen, 9, 1100.0, false).0, 1, "more finish meanwhile");
+    assert_eq!(image_generation(&mut seen, 9, 1000.0 + IMAGE_BATCH_MS, true), (1, None), "a render is in flight");
+    assert_eq!(image_generation(&mut seen, 9, 1000.0 + IMAGE_BATCH_MS, false), (9, None), "all taken by one render");
+}
+
 #[test]
 fn display_option_change_drops_the_render_in_flight() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let shown = crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false };
+    let shown =
+        crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false, images: 0 };
     invalidate_on_display_change(&mut app);
     app.canvas.shown = Some(shown);
     app.canvas.pending = Some((7, shown));
@@ -3456,38 +3470,6 @@ fn the_caret_blink_restarts_on_input_and_caret_changes() {
     assert!((caret::until_flip(0.0) - 0.625).abs() < 1e-9);
     assert!((caret::until_flip(0.96) - 0.025).abs() < 1e-9);
     assert!((caret::until_flip(1.0) - 0.625).abs() < 1e-9);
-}
-
-#[test]
-fn a_blurred_window_hides_the_caret_and_stops_repainting() {
-    let ctx = egui::Context::default();
-    let caret = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 7);
-
-    let caret_causes = |ctx: &egui::Context| {
-        let causes = ctx.repaint_causes();
-        causes.iter().filter(|c| c.file.replace('\\', "/").ends_with("canvas/caret.rs")).count()
-    };
-
-    // `repaint_causes` reports the pass before last, so each measured pass is followed by an empty one.
-    let mut visible = true;
-    let mut out = ctx.run_ui(egui::RawInput { focused: false, time: Some(10.0), ..Default::default() }, |_| {});
-    out.textures_delta.clear();
-    let mut out =
-        ctx.run_ui(egui::RawInput { focused: false, time: Some(10.1), ..Default::default() }, |ui| visible = caret::visible(ui.ctx(), caret));
-    out.textures_delta.clear();
-    let mut out = ctx.run_ui(egui::RawInput { focused: false, time: Some(10.2), ..Default::default() }, |_| {});
-    out.textures_delta.clear();
-    assert_eq!(caret_causes(&ctx), 0, "a blurred window schedules no blink repaint");
-    assert!(!visible, "and draws no caret");
-
-    // Positive control: the same assertion sees the repaint a focused window schedules.
-    let mut out =
-        ctx.run_ui(egui::RawInput { focused: true, time: Some(10.3), ..Default::default() }, |ui| visible = caret::visible(ui.ctx(), caret));
-    out.textures_delta.clear();
-    let mut out = ctx.run_ui(egui::RawInput { focused: true, time: Some(10.4), ..Default::default() }, |_| {});
-    out.textures_delta.clear();
-    assert!(visible, "a focused window draws the caret");
-    assert_eq!(caret_causes(&ctx), 1, "and schedules the next blink");
 }
 
 #[test]

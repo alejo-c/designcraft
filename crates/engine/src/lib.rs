@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+pub mod asset_io;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod atomic;
 pub mod autosize;
@@ -114,6 +115,8 @@ pub struct DocState {
     pub preview_record: Option<u32>,
     /// The fonts the document brought (`doc.font_scope`), found while it is open.
     pub fonts: Option<Arc<FontScope>>,
+    /// What the open found for its linked files, and their background check.
+    pub links: cmd::native_links::OpenLinks,
 }
 
 /// A document's font scope ([`designcraft_fonts::FontDb::load_document_fonts`]): its fonts are
@@ -170,6 +173,7 @@ impl DocState {
             preview_stash: None,
             preview_record: None,
             fonts: None,
+            links: Default::default(),
         }
     }
     /// The document changed: it gets a revision no document state had before. A cancelled
@@ -407,6 +411,9 @@ pub struct Session {
     /// The selection tool (`selection` or `directSelection`) chosen last: the one Cmd borrows.
     pub(crate) last_selection_tool: &'static str,
     pub journal: Vec<(String, Value)>,
+    /// A document read ahead of `file.open` ([`Session::stage_open`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) staged_open: Option<cmd::ReadDocument>,
     pub(crate) find_context: Option<cmd::find::FindContext>,
     pub clipboard: Option<Arc<Document>>,
     /// The x the clipboard's objects are measured from on their spread: its spine, or the left edge of
@@ -426,6 +433,8 @@ pub struct Session {
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor.
     pub loaded: Option<LoadedGraphic>,
+    /// Remaining graphics, in source-selection order, after `loaded`.
+    pub loaded_queue: std::collections::VecDeque<LoadedGraphic>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
@@ -467,6 +476,7 @@ impl Session {
 
     pub fn new() -> Self {
         guard::install_panic_hook();
+        asset_io::install();
         Session {
             docs: vec![],
             active: None,
@@ -479,6 +489,8 @@ impl Session {
             temp_tool: None,
             last_selection_tool: "selection",
             journal: vec![],
+            #[cfg(not(target_arch = "wasm32"))]
+            staged_open: None,
             find_context: None,
             clipboard: None,
             clipboard_origin: 0.0,
@@ -488,6 +500,7 @@ impl Session {
             link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
+            loaded_queue: Default::default(),
             transforms: Default::default(),
             text_drag: false,
             text_unit: None,
@@ -555,6 +568,14 @@ impl Session {
         }
     }
 
+    /// Hand `file.open` a document [`cmd::read_document`] read: the next `file.open` of its path
+    /// opens it instead of reading the file, so the slow read can run on another thread. Any other
+    /// `file.open` drops it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn stage_open(&mut self, read: cmd::ReadDocument) {
+        self.staged_open = Some(read);
+    }
+
     pub fn set_active(&mut self, i: usize) {
         if i < self.docs.len() && self.active != Some(i) {
             // The composition belongs to the document it shows in.
@@ -563,6 +584,7 @@ impl Session {
             }
             self.reset_find_scope();
             self.stop_data_preview();
+            self.unload_place_cursor();
             self.active = Some(i);
         }
     }
@@ -579,6 +601,7 @@ impl Session {
             }
         }
         self.stop_data_preview();
+        self.unload_place_cursor();
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
         self.docs.len() - 1
@@ -601,6 +624,10 @@ impl Session {
             recovery::discard_document(self, i, recovery_dir.as_deref());
         }
         if i < self.docs.len() {
+            // A background document's closing leaves the active document's place cursor alone.
+            if self.active == Some(i) {
+                self.unload_place_cursor();
+            }
             self.reset_find_scope();
             self.docs.remove(i);
             self.active = if self.docs.is_empty() { None } else { Some(i.min(self.docs.len() - 1)) };
@@ -670,11 +697,13 @@ impl Session {
         if spec.undoable
             && let Some(st) = self.active_mut()
             && st.interaction.is_none()
-            && st.doc.spreads.iter().any(|sp| sp.items.iter().any(|i| i.live_caption.is_some()))
+            && cmd::captions::has_live(&st.doc)
         {
             let mut d = (*st.doc).clone();
             if cmd::captions::refresh_live(&mut d) {
+                cmd::captions::clamp_text_selection(&d, &mut st.selection);
                 st.doc = Arc::new(d);
+                st.bump_revision();
             }
         }
         self.autosize_changed(spec, before.as_ref());
@@ -690,6 +719,14 @@ impl Session {
     /// Fails with `Disabled` unless the command is enabled or names objects or a table it can act on.
     fn check_enabled(&self, spec: &CommandSpec, id: &str, params: &Value) -> Result<()> {
         if let Err(e) = (spec.enabled)(self) {
+            // Explicit story/frame targets do not need a selection. Keep menu enablement
+            // selection-based; these handlers validate even malformed non-null targets.
+            if matches!(id, "file.exportText" | "type.fillWithPlaceholder")
+                && self.active().is_some()
+                && ["story", "frame"].iter().any(|key| params.get(*key).is_some_and(|v| !v.is_null()))
+            {
+                return Ok(());
+            }
             // A table command that takes `story` and `table` acts on the table the call names, so
             // the selection doesn't matter: with nothing selected, the caret outside a table, or
             // selected rows the command can't act on, `{"table": 3}` still runs.
