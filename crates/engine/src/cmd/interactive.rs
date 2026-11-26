@@ -93,11 +93,7 @@ pub fn specs() -> Vec<CommandSpec> {
 
 fn strip_mailto(s: &str) -> &str {
     let trimmed = s.trim();
-    if trimmed.as_bytes().get(..7).is_some_and(|p| p.eq_ignore_ascii_case(b"mailto:")) {
-        trimmed[7..].trim_start()
-    } else {
-        trimmed
-    }
+    if trimmed.as_bytes().get(..7).is_some_and(|p| p.eq_ignore_ascii_case(b"mailto:")) { trimmed[7..].trim_start() } else { trimmed }
 }
 
 /// `url`, `email`, `page` (1-based) or `anchor` (a text anchor's id, or its name).

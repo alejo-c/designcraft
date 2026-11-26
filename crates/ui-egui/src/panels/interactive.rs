@@ -36,11 +36,7 @@ struct HyperlinkPanelState {
 
 fn normalize_email(input: &str) -> &str {
     let trimmed = input.trim();
-    if trimmed.as_bytes().get(..7).is_some_and(|p| p.eq_ignore_ascii_case(b"mailto:")) {
-        trimmed[7..].trim_start()
-    } else {
-        trimmed
-    }
+    if trimmed.as_bytes().get(..7).is_some_and(|p| p.eq_ignore_ascii_case(b"mailto:")) { trimmed[7..].trim_start() } else { trimmed }
 }
 
 fn dest_text(app: &DesignApp, d: &Value) -> String {
@@ -95,19 +91,15 @@ pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
                     .accessible_name(crate::i18n::tr(&lang, "URL").to_owned());
             }
             HyperlinkKind::Email => {
-                ui.add(egui::TextEdit::singleline(&mut state.email).desired_width(170.0))
-                    .accessible_name(crate::i18n::tr(&lang, "Email").to_owned());
+                ui.add(egui::TextEdit::singleline(&mut state.email).desired_width(170.0)).accessible_name(crate::i18n::tr(&lang, "Email").to_owned());
             }
             HyperlinkKind::Page => {
                 let selected_text = pages.get(state.page).cloned().unwrap_or_default();
-                let combo = craft_ui::ComboBox::from_id_salt(state_id.with("page"))
-                    .selected_text(selected_text)
-                    .width(170.0)
-                    .show_ui(ui, |ui| {
-                        for (i, label) in pages.iter().enumerate() {
-                            ui.selectable_value(&mut state.page, i, label);
-                        }
-                    });
+                let combo = craft_ui::ComboBox::from_id_salt(state_id.with("page")).selected_text(selected_text).width(170.0).show_ui(ui, |ui| {
+                    for (i, label) in pages.iter().enumerate() {
+                        ui.selectable_value(&mut state.page, i, label);
+                    }
+                });
                 let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&lang, "Page"));
             }
         }
