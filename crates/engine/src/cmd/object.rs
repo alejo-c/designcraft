@@ -734,7 +734,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Distribute",
             ["Window", "Object & Layout", "Align"],
             None,
-            "{axis: horizontal|vertical, by?: centers|spacing, spacing?: points, ids?}",
+            "{axis: horizontal|vertical, by?: spacing|centers, spacing?: points, ids?}",
             has_selection,
             distribute
         ),
@@ -3671,24 +3671,24 @@ fn distribute(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("object.distribute", "select at least three objects"));
     }
     let horizontal = str_param(p, "axis") != Some("vertical");
-    let by_spacing = str_param(p, "by") == Some("spacing") || p.get("spacing").is_some();
+    let by_spacing = str_param(p, "by") != Some("centers") || p.get("spacing").is_some();
     let fixed = p.get("spacing").and_then(Value::as_f64);
     s.edit(|d, _| {
         let mut items: Vec<(ItemId, Rect)> = ids.iter().filter_map(|i| d.item(*i).map(|it| (*i, it.bounds()))).collect();
-        let key = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
-        items.sort_by(|a, b| key(&a.1).total_cmp(&key(&b.1)));
+        let lo = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
+        let hi = |r: &Rect| if horizontal { r.x1 } else { r.y1 };
+        let size = |r: &Rect| hi(r) - lo(r);
+        items.sort_by(|a, b| lo(&a.1).total_cmp(&lo(&b.1)).then_with(|| hi(&a.1).total_cmp(&hi(&b.1))));
         let n = items.len();
         if n < 2 {
             return ok();
         }
         let (first, last) = (items[0].1, items[n - 1].1);
-        let lo = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
-        let hi = |r: &Rect| if horizontal { r.x1 } else { r.y1 };
-        let size = |r: &Rect| hi(r) - lo(r);
         let mut targets: Vec<f64> = Vec::with_capacity(n);
         if by_spacing {
+            let max_hi = items.iter().map(|(_, r)| hi(r)).fold(f64::NEG_INFINITY, f64::max);
             let total: f64 = items.iter().map(|(_, r)| size(r)).sum();
-            let gap = fixed.unwrap_or_else(|| (hi(&last) - lo(&first) - total) / (n - 1) as f64);
+            let gap = fixed.unwrap_or_else(|| (max_hi - lo(&first) - total) / (n - 1) as f64);
             let mut pos = lo(&first);
             for (_, r) in &items {
                 targets.push(pos);

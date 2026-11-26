@@ -1630,3 +1630,49 @@ fn text_frame_section_shows_the_frame_that_shows_the_caret() {
     let shown = super::text::text_frame_target(&app).map(|(id, o, _)| (id, o.columns));
     assert_eq!(shown, Some((ItemId(b), 3)));
 }
+
+/// The Align panel's vertical and horizontal distribute buttons equalize the gap between adjacent
+/// edges even when the selected objects have different sizes.
+#[test]
+fn align_panel_distribute_buttons_equalize_edge_gaps() {
+    use designcraft_doc::ItemId;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let mut ids = Vec::new();
+    for rect in [[10.0, 10.0, 90.0, 90.0], [120.0, 120.0, 140.0, 140.0], [250.0, 250.0, 270.0, 270.0]] {
+        let id = app.run("frame.create", json!({"rect": rect, "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        ids.push(id);
+    }
+    app.run("selection.set", json!({"ids": ids})).unwrap();
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(260.0, 120.0)).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), "");
+                crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                ready = true;
+                return;
+            }
+            align_panel(app, ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    h.get_by_label("Distribute ↕").click();
+    h.run_steps(2);
+    let bounds = |app: &DesignApp| -> Vec<designcraft_geom::Rect> {
+        let doc = &app.session.active().unwrap().doc;
+        ids.iter().map(|i| doc.item(ItemId(*i)).unwrap().bounds()).collect()
+    };
+    let mut vb = bounds(h.state());
+    vb.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+    assert!(((vb[1].y0 - vb[0].y1) - (vb[2].y0 - vb[1].y1)).abs() < 1e-9, "vertical gaps differ: {vb:?}");
+    assert!((vb[0].y0 - 10.0).abs() < 1e-9 && (vb[2].y1 - 270.0).abs() < 1e-9, "vertical span changed: {vb:?}");
+
+    h.get_by_label("Distribute ↔").click();
+    h.run_steps(2);
+    let mut hb = bounds(h.state());
+    hb.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    assert!(((hb[1].x0 - hb[0].x1) - (hb[2].x0 - hb[1].x1)).abs() < 1e-9, "horizontal gaps differ: {hb:?}");
+    assert!((hb[0].x0 - 10.0).abs() < 1e-9 && (hb[2].x1 - 270.0).abs() < 1e-9, "horizontal span changed: {hb:?}");
+}

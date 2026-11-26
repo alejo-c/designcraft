@@ -481,10 +481,10 @@ pub fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     ui.horizontal(|ui| {
         if widgets::icon_toggle(ui, "objdistribute-h", false, crate::i18n::tr(&app.ui.language, "Distribute ↔")).clicked() {
-            let _ = app.run("object.distribute", json!({"axis": "horizontal"}));
+            let _ = app.run("object.distribute", json!({"axis": "horizontal", "by": "spacing"}));
         }
         if widgets::icon_toggle(ui, "objdistribute-v", false, crate::i18n::tr(&app.ui.language, "Distribute ↕")).clicked() {
-            let _ = app.run("object.distribute", json!({"axis": "vertical"}));
+            let _ = app.run("object.distribute", json!({"axis": "vertical", "by": "spacing"}));
         }
     });
 }
