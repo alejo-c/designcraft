@@ -402,6 +402,38 @@ fn align_and_distribute() {
 }
 
 #[test]
+fn distribute_vertical_default_equalizes_edge_gaps() {
+    let mut s = session();
+    let mut ids = vec![];
+    // Unequal heights so center distribution and edge-spacing distribution disagree.
+    for (y0, h) in [(10.0, 80.0), (120.0, 20.0), (250.0, 20.0)] {
+        let r = s.execute("frame.create", &json!({"rect": [20.0, y0, 100.0, y0 + h], "content": "unassigned"})).unwrap();
+        ids.push(r["id"].as_u64().unwrap());
+    }
+    s.execute("object.distribute", &json!({"ids": ids, "axis": "vertical"})).unwrap();
+    let st = s.doc().unwrap();
+    let mut b: Vec<designcraft_geom::Rect> = ids.iter().map(|i| st.doc.item(designcraft_doc::ItemId(*i)).unwrap().bounds()).collect();
+    b.sort_by(|a, c| a.y0.total_cmp(&c.y0));
+    let gap0 = b[1].y0 - b[0].y1;
+    let gap1 = b[2].y0 - b[1].y1;
+    assert!((gap0 - gap1).abs() < 1e-9, "unequal vertical gaps: {gap0} vs {gap1} ({b:?})");
+    assert!((b[0].y0 - 10.0).abs() < 1e-9 && (b[2].y1 - 270.0).abs() < 1e-9, "outer span changed: {b:?}");
+
+    // When an earlier object extends below the bottommost y0, spacing still uses the full outer span.
+    let mut overlap_ids = vec![];
+    for (x0, y0, y1) in [(200.0, 0.0, 20.0), (200.0, 30.0, 200.0), (300.0, 40.0, 50.0)] {
+        let r = s.execute("frame.create", &json!({"rect": [x0, y0, x0 + 40.0, y1], "content": "unassigned"})).unwrap();
+        overlap_ids.push(r["id"].as_u64().unwrap());
+    }
+    s.execute("object.distribute", &json!({"ids": overlap_ids, "axis": "vertical"})).unwrap();
+    let st = s.doc().unwrap();
+    let mut ob: Vec<designcraft_geom::Rect> = overlap_ids.iter().map(|i| st.doc.item(designcraft_doc::ItemId(*i)).unwrap().bounds()).collect();
+    ob.sort_by(|a, c| a.y0.total_cmp(&c.y0));
+    assert!(((ob[1].y0 - ob[0].y1) - (ob[2].y0 - ob[1].y1)).abs() < 1e-9, "unequal gaps: {ob:?}");
+    assert!((ob[0].y0 - 0.0).abs() < 1e-9 && (ob[2].y1 - 200.0).abs() < 1e-9, "outer span changed: {ob:?}");
+}
+
+#[test]
 fn pen_draws_and_direct_selection_edits() {
     use designcraft_tools::{PointerEvent, PointerKind};
     let mut s = session();
