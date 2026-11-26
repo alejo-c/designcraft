@@ -2692,8 +2692,14 @@ fn double_clicking_into_group_selects_element_and_allows_sibling_clicks_and_edit
     assert!(matches!(acts.as_slice(), [Action::Exec(cmd, p)] if cmd == "text.placeCaret" && p["frame"] == tf_id.0), "{acts:?}");
 
     // 5. Pressing Escape while a child inside a group is selected steps up to the group; Escape on the group deselects.
-    assert_eq!(t.key(&ctx(&d, &sel_a, &c, &l), ToolKey::Escape, Mods::default()), vec![Action::Exec("select.container".into(), serde_json::json!({}))]);
-    assert_eq!(t.key(&ctx(&d, &sel_g, &c, &l), ToolKey::Escape, Mods::default()), vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+    assert_eq!(
+        t.key(&ctx(&d, &sel_a, &c, &l), ToolKey::Escape, Mods::default()),
+        vec![Action::Exec("select.container".into(), serde_json::json!({}))]
+    );
+    assert_eq!(
+        t.key(&ctx(&d, &sel_g, &c, &l), ToolKey::Escape, Mods::default()),
+        vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]
+    );
 
     // 6. Clicking an outside object or empty canvas exits the group; next single-click selects the group again.
     let acts = t.pointer(&ctx(&d, &sel_a, &c, &l), &PointerEvent::new(PointerKind::Down, pout.x, pout.y));
